@@ -14,6 +14,10 @@ Use public macOS Accessibility APIs to identify in-call controls in the exact Te
 
 Expose permission/detection status in settings and an explicit user action to open macOS Accessibility settings. Do not silently request/grant permissions. Initial label support is English with German equivalents where unambiguous; unsupported layouts must be visible as uncertain. Validate actual Teams/Zoom call signals on the installed versions before describing detection as verified. Live-call validation may require the user to run a solo call; synthetic tests do not establish app compatibility.
 
+### Live-validation correction: session participants
+
+End confirmation applies to applications positively observed active in the current call episode. Any selected application that becomes active joins the episode, and recording continues until all participants are confirmed inactive for the grace interval. Unknown from a participant resets that timer. Unknown from an unrelated application that has never been observed in this episode does not block stopping or rearming after a manual stop. Raw detection remains Unknown; empty windows, errors and scan limits are never treated as proof of inactivity. An entirely unrecognized overlapping call cannot be guaranteed to extend recording. This corrects the observed failure where a Zoom call ended but an unrelated unreadable Teams window kept recording indefinitely.
+
 ## Integration
 
 Native polling must continue with the window hidden. Separate the native observation adapter, deterministic lifecycle policy, and Tauri orchestration. Use existing provider/model checks, device preferences, notification preferences, recording state events, and recording-stop-complete post-processing. Establish frontend readiness before starting, and synchronize transcript/session state for automatic starts. Serialize lifecycle actions against manual starts/stops with a token/session identity so automation cannot stop a replacement manual session. Failed starts are surfaced once per call and do not loop. Failed stops remain retryable and surface an error.
