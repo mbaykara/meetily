@@ -79,3 +79,12 @@ User explicitly requested a configurable folder for saved calls. Implement after
 2. Validate and persist the selected directory, preserve previous preference/UI on cancel or failure, and report errors clearly. Do not move or delete existing recordings.
 3. Snapshot configured save_folder at both automatic and manual recording starts and pass it to the saver instead of using a hardcoded default directory. A preference change cannot redirect an existing session.
 4. Add targeted tests for selection/cancel/save failure, configured-folder routing, and transcript-only visibility. Check TypeScript/native compilation, update setup docs, commit and review before final packaging.
+
+### Task 4: Fix live post-call idle detection
+
+The user confirmed automatic start in Zoom on the installed build, then leaving the call did not stop recording. They stopped manually; metadata confirms completed Zoom transcript-only output with JSON and TXT. Both app switches are enabled. Observed idle Teams chat exposes `Chat actions` and `Actions for new message` toolbars but no `Meet now`; observed Zoom notes editor exposes `Back to Home`, `View My Notes activity center` buttons and a selected `Notes` tab. Current classifiers return Unknown for these complete control sets; the combined policy cannot start its stop timer while either app is Unknown.
+
+1. Reproduce both observed idle layouts with failing tests against production WindowEvidence, without storing meeting titles, participants, chat text or note content.
+2. Recognize these narrowly defined post-call layouts while preserving Active precedence, per-window matching, unknown/incomplete-scan safety, and overlap/manual-session protection. Partial call evidence must not be mistaken for an idle screen.
+3. Add transition-only diagnostics for app states, ownership and scan completeness/reason categories, never inspected strings or meeting content, so an installed-app failure can be diagnosed without guessing.
+4. Run classifier/policy regressions and native compile checks, review the scoped fix, build and install the replacement, then verify the real start/end cycle before claiming the live stop defect resolved.
