@@ -82,7 +82,9 @@ impl Policy {
         self.pending = false;
         if success {
             self.owned = None;
-            self.suppressed = true;
+            // Automatic stop already required confirmed call absence. The next
+            // active call must not need an extra inactive sample after saving.
+            self.suppressed = false;
         }
     }
 }
@@ -172,6 +174,25 @@ mod tests {
         let mut p = owned();
         p.tick(0, true, Observation::Inactive, Some(8));
         assert_eq!(p.tick(20, true, Observation::Inactive, Some(8)), None);
+    }
+    #[test]
+    fn automatic_stop_rearms_for_call_started_during_save() {
+        let mut policy = owned();
+        policy.tick(0, true, Observation::Inactive, Some(7));
+        assert_eq!(
+            policy.tick(10, true, Observation::Inactive, Some(7)),
+            Some(Action::Stop(7))
+        );
+        policy.stopped(true);
+        // Native orchestration skips policy while saving. Call B may already
+        // be active when saving completes, without another inactive sample.
+        assert_eq!(policy.tick(30, true, Observation::Active, None), None);
+        assert_eq!(
+            policy.tick(32, true, Observation::Active, None),
+            Some(Action::Start)
+        );
+        policy.started(Some(8));
+        assert_eq!(policy.tick(34, true, Observation::Active, Some(8)), None);
     }
     #[test]
     fn stop_failure_retries() {
