@@ -70,3 +70,12 @@ User-directed refinement during packaging: use automatic-call audio only for tra
 5. Review the focused diff and fix material findings before pushing for the new installer. Parent owns CI fixes and build monitoring; implementer owns Task 2 source/tests/docs.
 
 Design approved by user. Both applications installed. Teams idle UI inspected through computer-use: no active call. Active-call controls remain to be validated. Rust toolchain exists outside default PATH. Parent agent handles toolchain setup and independent validation while the implementer owns feature changes.
+
+### Task 3: Configurable call storage directory
+
+User explicitly requested a configurable folder for saved calls. Implement after Task 2 recovery fixes because it uses the same recording manager/saver startup path.
+
+1. Show storage directory controls in Recording Settings independently of Save Audio, with native Choose Folder and Open Folder actions. Existing Tauri dialog plugin is available; replace the placeholder directory-selection command.
+2. Validate and persist the selected directory, preserve previous preference/UI on cancel or failure, and report errors clearly. Do not move or delete existing recordings.
+3. Snapshot configured save_folder at both automatic and manual recording starts and pass it to the saver instead of using a hardcoded default directory. A preference change cannot redirect an existing session.
+4. Add targeted tests for selection/cancel/save failure, configured-folder routing, and transcript-only visibility. Check TypeScript/native compilation, update setup docs, commit and review before final packaging.

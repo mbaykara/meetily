@@ -28,6 +28,10 @@ The user requested date and time in call/file names and prioritized transcripts 
 
 Persist structured transcripts and metadata incrementally through the existing save path. At stop, finalize transcripts and completed metadata even when no audio saver exists; retain error reporting and recovery behavior. Also produce a human-readable text transcript named after the dated session. Do not delete any existing audio files. Validate no audio/checkpoint files are created for new automatic sessions and the last transcript segments, duration and completed status are saved.
 
+## User refinement: configurable storage folder
+
+Recording Settings must show the saved calls folder for transcript-only and audio-saving sessions, with a working native folder picker and Open Folder action. Persist the chosen absolute directory across app restarts and validate that it can be used before confirming the change. A cancelled picker leaves preferences unchanged. A failed preference write leaves the prior setting and UI intact and shows an actionable error. New sessions snapshot this configured base directory at startup; the current session's output location never changes mid-session. Both manual and automatic starts honor the setting. Existing recordings stay in their original folders. The existing platform default applies until the user chooses another location.
+
 ## Constraints
 
 - macOS desktop apps only; Windows/Linux compile with an unavailable detector.
