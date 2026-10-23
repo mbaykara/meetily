@@ -22,6 +22,12 @@ Native polling must continue with the window hidden. Separate the native observa
 
 Unit tests cover idle/prejoin, active call, mute/silence, reconnect grace, unknown/error samples, missing permission, manual stop suppression, manual session replacement, duplicate starts, failed start/stop, disabled settings, overlapping calls, and bounds on scan work. Test integration with the global frontend providers, not only the recording page. Run frontend TypeScript checks and relevant tests, Rust formatting/checks and policy tests. Record build and live-validation limits explicitly.
 
+## User refinement: transcript-only sessions and dated names
+
+The user requested date and time in call/file names and prioritized transcripts with no retained sound. Automatic Teams and Zoom sessions therefore capture audio for live transcription but do not persist audio or audio checkpoints, regardless of the manual recording audio preference. Preserve manual recording settings. Name each automatic session from its active app(s) and local start time, for example `Teams 2026-10-23_21-50-12`, `Zoom 2026-10-23_21-50-12`, or `Teams and Zoom 2026-10-23_21-50-12`. Use this name consistently in the meeting list, notification, and saved session folder. Never read meeting titles from app windows.
+
+Persist structured transcripts and metadata incrementally through the existing save path. At stop, finalize transcripts and completed metadata even when no audio saver exists; retain error reporting and recovery behavior. Also produce a human-readable text transcript named after the dated session. Do not delete any existing audio files. Validate no audio/checkpoint files are created for new automatic sessions and the last transcript segments, duration and completed status are saved.
+
 ## Constraints
 
 - macOS desktop apps only; Windows/Linux compile with an unavailable detector.

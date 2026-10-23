@@ -59,4 +59,14 @@ Teams ends while Zoom remains active: continue
 
 ## Execution record
 
+### Task 2: Transcript-only automatic sessions and dated transcript files
+
+User-directed refinement during packaging: use automatic-call audio only for transcription and label session/file with local start date and time. Extend Task 1 without changing manual recording preferences or existing files.
+
+1. Generate a safe stable session name from observed active Teams/Zoom apps and local start time; reuse for start, notification, persistence and readable transcript filename.
+2. Make automatic start explicitly disable retained audio/checkpoints; preserve manual audio preference behavior.
+3. Repair transcript-only saver finalization: persist last segments, validate output, finalize completed metadata/duration and report errors without requiring an audio path. Add a readable text transcript beside structured JSON.
+4. Add focused tests for naming, no-audio artifacts and final transcript/metadata persistence; run relevant compile/frontend checks. Update user documentation and commit a concise Conventional Commit.
+5. Review the focused diff and fix material findings before pushing for the new installer. Parent owns CI fixes and build monitoring; implementer owns Task 2 source/tests/docs.
+
 Design approved by user. Both applications installed. Teams idle UI inspected through computer-use: no active call. Active-call controls remain to be validated. Rust toolchain exists outside default PATH. Parent agent handles toolchain setup and independent validation while the implementer owns feature changes.
