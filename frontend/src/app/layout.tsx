@@ -1,6 +1,7 @@
 'use client'
 
 import './globals.css'
+import { AutomaticRecordingBridge } from '@/components/AutomaticRecordingBridge'
 import { Source_Sans_3 } from 'next/font/google'
 import Sidebar from '@/components/Sidebar'
 import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
@@ -243,6 +244,7 @@ export default function RootLayout({
                       <SidebarProvider>
                         <TooltipProvider>
                           <RecordingPostProcessingProvider>
+                            <AutomaticRecordingBridge ready={onboardingCompleted && !showOnboarding} />
                             <ImportDialogProvider onOpen={handleOpenImportDialog}>
                               {/* Download progress toast provider - listens for background downloads */}
                               <DownloadProgressToastProvider />

@@ -1,3 +1,4 @@
+import { AutomaticRecordingSettings } from './AutomaticRecordingSettings';
 import React, { useState, useEffect } from 'react';
 import { Switch } from '@/components/ui/switch';
 import { FolderOpen } from 'lucide-react';
@@ -235,6 +236,8 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
           onCheckedChange={handleNotificationToggle}
         />
       </div>
+
+      <AutomaticRecordingSettings />
 
       {/* Device Preferences */}
       <div className="space-y-4">

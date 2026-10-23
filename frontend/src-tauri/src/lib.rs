@@ -43,6 +43,7 @@ pub mod config;
 pub mod console_utils;
 pub mod database;
 pub mod notifications;
+mod meeting_detection;
 pub mod ollama;
 pub mod onboarding;
 pub mod openai;
@@ -584,6 +585,7 @@ pub fn run() {
         .manage(audio::init_system_audio_state())
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .setup(|_app| {
+            meeting_detection::start(_app.handle().clone());
             let verbose = cfg!(debug_assertions)
                 || std::env::var("MEETILY_DEBUG_LOG")
                     .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
@@ -734,6 +736,11 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            meeting_detection::get_automatic_recording_status,
+            meeting_detection::set_automatic_recording_preferences,
+            meeting_detection::automatic_recording_frontend_ready,
+            meeting_detection::automatic_recording_prepared,
+            meeting_detection::open_automatic_recording_accessibility,
             start_recording,
             stop_recording,
             is_recording,

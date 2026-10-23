@@ -7,7 +7,7 @@ use anyhow::Result;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -36,6 +36,12 @@ pub use super::transcription::TranscriptUpdate;
 // ============================================================================
 
 // Simple recording state tracking
+pub(crate) static LIFECYCLE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static SESSION: AtomicU64 = AtomicU64::new(0);
+pub(crate) fn current_session() -> Option<u64> {
+    IS_RECORDING.load(Ordering::SeqCst).then(|| SESSION.load(Ordering::SeqCst))
+}
+
 static IS_RECORDING: AtomicBool = AtomicBool::new(false);
 
 /// True for the whole `stop_recording` tail (manager taken -> `recording-stopped`
@@ -93,6 +99,7 @@ impl Drop for StoppingGuard {
 /// start path can't silently ship with a per-session flag left unreset (e.g.
 /// the mic-recovery budget already exhausted).
 fn finalize_recording_start() {
+    SESSION.fetch_add(1, Ordering::SeqCst);
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
     IS_RECORDING.store(true, Ordering::SeqCst);
     MIC_FALLBACK_FAILED_ATTEMPTS.store(0, Ordering::SeqCst); // fresh mic-recovery budget per session
@@ -304,7 +311,7 @@ pub async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String
 }
 
 /// Start recording with default devices and optional meeting name
-pub async fn start_recording_with_meeting_name<R: Runtime>(
+pub(crate) async fn start_recording_with_meeting_name_locked<R: Runtime>(
     app: AppHandle<R>,
     meeting_name: Option<String>,
 ) -> Result<(), String> {
@@ -492,7 +499,7 @@ pub async fn start_recording_with_devices<R: Runtime>(
 }
 
 /// Start recording with specific devices and optional meeting name
-pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
+pub(crate) async fn start_recording_with_devices_and_meeting_locked<R: Runtime>(
     app: AppHandle<R>,
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
@@ -675,7 +682,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 }
 
 /// Stop recording with optimized graceful shutdown ensuring NO transcript chunks are lost
-pub async fn stop_recording<R: Runtime>(
+pub(crate) async fn stop_recording_locked<R: Runtime>(
     app: AppHandle<R>,
     _args: RecordingArgs,
 ) -> Result<(), String> {
@@ -732,6 +739,8 @@ pub async fn stop_recording<R: Runtime>(
         }
         Err(e) => {
             error!("❌ Failed to stop audio streams: {}", e);
+            // Preserve the same session so a later manual or automatic stop can retry.
+            *RECORDING_MANAGER.lock().unwrap() = manager_for_cleanup;
             return Err(format!("Failed to stop audio streams: {}", e)); // _stopping_guard clears on return
         }
     }
@@ -1695,4 +1704,30 @@ async fn trigger_mic_fallback_to_default<R: Runtime>(
             }
         }
     }
+}
+
+/// Serialize every entry point against automatic lifecycle actions.
+pub async fn start_recording_with_meeting_name<R: Runtime>(
+    app: AppHandle<R>,
+    meeting_name: Option<String>,
+) -> Result<(), String> {
+    let _guard = LIFECYCLE.lock().await;
+    start_recording_with_meeting_name_locked(app, meeting_name).await
+}
+
+pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
+    app: AppHandle<R>,
+    mic_device_name: Option<String>,
+    system_device_name: Option<String>,
+    meeting_name: Option<String>,
+) -> Result<(), String> {
+    let _guard = LIFECYCLE.lock().await;
+    start_recording_with_devices_and_meeting_locked(
+        app, mic_device_name, system_device_name, meeting_name,
+    ).await
+}
+
+pub async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> Result<(), String> {
+    let _guard = LIFECYCLE.lock().await;
+    stop_recording_locked(app, args).await
 }
