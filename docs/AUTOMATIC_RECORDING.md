@@ -1,6 +1,6 @@
 # Automatic recording for Teams and Zoom
 
-Automatic recording is an optional macOS desktop feature. It is off by default. Meetily must remain running; hiding its window is supported. Quitting Meetily stops detection. Browser meetings and other operating systems are unsupported.
+Automatic recording transcribes calls without retaining sound. It is an optional macOS desktop feature. It is off by default. Meetily must remain running; hiding its window is supported. Quitting Meetily stops detection. Browser meetings and other operating systems are unsupported.
 
 1. Complete Meetily onboarding, choose a transcription model, and verify a manual recording works with your preferred microphone and system audio devices.
 2. Open Settings, then Recording Settings. Enable Microsoft Teams, Zoom, or both under Automatic recording.
@@ -13,6 +13,14 @@ A manual recording remains under manual control. Manually stopping an automatic 
 The native detector limits traversal depth, element count, and IPC duration. Each window has its own scan budget; controls in different windows cannot form an active-call pair. Unreadable windows prevent confirmed call absence. It identifies only exact Teams/Zoom bundle identifiers and supported English/German control labels, requiring both a leave/end-call control and a microphone mute/unmute control. It does not use window titles, process presence, sound levels, browser tabs, or transcript content as active-call signals. It does not log or store inspected UI labels. Accessibility layout changes or localization can prevent detection.
 
 A new recording waits for the previous recording to finish saving and complete its navigation cleanup. A failed save keeps the transcript available and blocks another start. Use Retry save in the error notification or Recording Settings to retry after resolving the error. A claimed preparation request reserves the native lifecycle until the frontend commits or cancels; reloading or closing the webview cancels the reservation.
+
+## Transcript files and names
+
+Automatic calls use the active app name and local recording start date/time: `Teams 2026-10-23_21-50-12`, `Zoom 2026-10-23_21-50-12`, or `Teams and Zoom 2026-10-23_21-50-12`. The same stable name appears in the meeting list, start notification and saved session folder. Names never come from meeting windows.
+
+Each automatic session folder contains `transcripts.json`, `metadata.json`, and a readable text file such as `Teams 2026-10-23_21-50-12.txt`. Text lines include elapsed timestamps. Finalization includes queued late transcript segments, completed metadata and recording duration. Audio is used for live transcription and discarded; automatic sessions do not create audio files or `.checkpoints`, even if Save Audio Recordings is enabled for manual recordings. Manual audio preferences remain unchanged, and existing audio files are kept.
+
+Storage errors leave transcript buffers available and report an error. Retry stopping if native finalization failed; use Retry save if the later meeting/database save failed. Pending workers and transcript buffers remain tied to their original session while stopping is retried.
 
 ## Live validation checklist
 
@@ -39,3 +47,9 @@ rustc --test frontend/src-tauri/src/meeting_detection/policy.rs -o /tmp/meetily-
 ```
 
 Frontend integration tests are in `frontend/tests/components/automatic-recording.test.tsx` and `frontend/tests/components/automatic-recording-lifecycle.test.tsx` and use the existing Bun/React test conventions. The complete native integration requires `cargo check --manifest-path frontend/src-tauri/Cargo.toml --lib`, including the project's audio/model toolchain dependencies.
+
+Focused persistence/naming tests compile production source without the audio/Xcode stack:
+
+```sh
+cargo test --offline --manifest-path frontend/src-tauri/tests/transcript-persistence/Cargo.toml
+```

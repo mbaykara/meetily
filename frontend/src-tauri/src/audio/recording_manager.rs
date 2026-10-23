@@ -189,6 +189,7 @@ pub struct RecordingManager {
     stream_manager: AudioStreamManager,
     pipeline_manager: AudioPipelineManager,
     recording_saver: RecordingSaver,
+    saved_recording_duration: Option<f64>,
     device_monitor: Option<AudioDeviceMonitor>,
     device_event_receiver: Option<mpsc::UnboundedReceiver<DeviceEvent>>,
 }
@@ -209,6 +210,7 @@ impl RecordingManager {
             stream_manager,
             pipeline_manager,
             recording_saver: RecordingSaver::new(),
+            saved_recording_duration: None,
             device_monitor: Some(device_monitor),
             device_event_receiver: Some(device_event_receiver),
         }
@@ -276,7 +278,11 @@ impl RecordingManager {
             return Err(RecordingStartError::TranscriptionRuntime(error));
         }
 
-        self.recording_saver.start_accumulation(auto_save, recording_receiver);
+        if let Err(error) = self.recording_saver.start_accumulation(auto_save, recording_receiver) {
+            let _ = self.pipeline_manager.stop().await;
+            self.state.cleanup();
+            return Err(RecordingStartError::Other(error));
+        }
         self.recording_saver.set_device_info(
             microphone_device.as_ref().map(|d| d.name.clone()),
             system_device.as_ref().map(|d| d.name.clone())
@@ -314,6 +320,10 @@ impl RecordingManager {
             monitor.stop_monitoring().await;
         }
 
+        if self.saved_recording_duration.is_none() {
+            self.saved_recording_duration = self.state.get_active_recording_duration();
+        }
+
         // Stop recording state first
         self.state.stop_recording();
 
@@ -340,6 +350,10 @@ impl RecordingManager {
         if let Some(ref mut monitor) = self.device_monitor {
             info!("Stopping device monitor first...");
             monitor.stop_monitoring().await;
+        }
+
+        if self.saved_recording_duration.is_none() {
+            self.saved_recording_duration = self.state.get_active_recording_duration();
         }
 
         // Stop recording state first - this clears device references
@@ -369,7 +383,7 @@ impl RecordingManager {
         debug!("Saving recording with transcript chunks");
 
         // Get actual recording duration from state
-        let recording_duration = self.state.get_active_recording_duration();
+        let recording_duration = self.saved_recording_duration.or_else(|| self.state.get_active_recording_duration());
         info!("Recording duration from state: {:?}s", recording_duration);
 
         // Save the recording with actual duration
@@ -378,11 +392,11 @@ impl RecordingManager {
                 info!("Recording saved successfully to: {}", file_path);
             }
             Ok(None) => {
-                debug!("Recording not saved (auto-save disabled or no audio data)");
+                debug!("Transcripts and metadata saved without an audio file");
             }
             Err(e) => {
                 error!("Failed to save recording: {}", e);
-                // Don't fail the stop operation if saving fails
+                return Err(anyhow::anyhow!(e));
             }
         }
 
@@ -395,7 +409,7 @@ impl RecordingManager {
         info!("Stopping recording manager");
 
         // Get recording duration BEFORE stopping (important!)
-        let recording_duration = self.state.get_active_recording_duration();
+        let recording_duration = self.saved_recording_duration.or_else(|| self.state.get_active_recording_duration());
         info!("Recording duration before stop: {:?}s", recording_duration);
 
         // Stop recording state first
@@ -421,7 +435,7 @@ impl RecordingManager {
             }
             Err(e) => {
                 error!("Failed to save recording: {}", e);
-                // Don't fail the stop operation if saving fails
+                return Err(anyhow::anyhow!(e));
             }
         }
 
@@ -512,6 +526,13 @@ impl RecordingManager {
     /// Set the meeting name for this recording session
     pub fn set_meeting_name(&mut self, name: Option<String>) {
         self.recording_saver.set_meeting_name(name);
+    }
+
+    pub fn set_transcript_only_session(&mut self) {
+        self.recording_saver.set_transcript_only_session();
+    }
+    pub fn transcript_sink(&self) -> super::transcript_files::TranscriptSink {
+        self.recording_saver.transcript_sink()
     }
 
     /// Add a structured transcript segment to be saved later

@@ -115,7 +115,7 @@ async function stop(id: number) {
 }
 test('global providers retain the old transcript through delayed save and cleanup before preparing the next call', async () => {
   await start('first call'); await stop(1);
-  await act(async () => { await emit('automatic-recording-prepare','next-call'); });
+  await act(async () => { await emit('automatic-recording-prepare',{ request:'next-call',meeting_name:'Teams 2026-10-23_21-50-12' }); });
   expect(transcripts.transcriptsRef.current.map(t => t.text)).toEqual(['first call']);
   expect(busy).toBe(true);
   await act(async () => { finishSave(); }); await advance();
@@ -123,7 +123,7 @@ test('global providers retain the old transcript through delayed save and cleanu
   expect(busy).toBe(true);
   await act(async () => { navigate!(); }); await advance();
   expect(busy).toBe(false);
-  await act(async () => { await emit('automatic-recording-prepare','next-call-valid'); });
+  await act(async () => { await emit('automatic-recording-prepare',{ request:'next-call-valid',meeting_name:'Teams 2026-10-23_21-50-12' }); });
   expect(transcripts.transcriptsRef.current).toEqual([]);
   newSave(); await start('second call'); await stop(2);
   expect(saved.map(s => s.transcripts.map(t => t.text))).toEqual([['first call'],['second call']]);
@@ -146,7 +146,7 @@ test('failed prior save preserves transcripts and keeps automatic preparation bl
   await start('unsaved call'); await stop(1);
   await act(async () => { finishSave(); }); await advance();
   expect(busy).toBe(true);
-  await act(async () => { await emit('automatic-recording-prepare','blocked-after-error'); });
+  await act(async () => { await emit('automatic-recording-prepare',{ request:'blocked-after-error',meeting_name:'Teams 2026-10-23_21-50-12' }); });
   expect(transcripts.transcriptsRef.current.map(t => t.text)).toEqual(['unsaved call']);
   expect(setStatus.mock.calls.some(call => call[0] === 'error')).toBe(true);
   saveFailure=false;

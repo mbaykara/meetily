@@ -15,21 +15,22 @@ export function AutomaticRecordingBridge({ ready }: { ready: boolean }) {
     let lastError: string | null = null;
     const setup = async () => {
       try {
-        const prepare = await listen<string>('automatic-recording-prepare', async ({ payload }) => {
+        const prepare = await listen<{ request: string; meeting_name: string }>('automatic-recording-prepare', async ({ payload }) => {
+          const { request, meeting_name } = payload;
           try {
             // Claim the native reservation before touching shared session state.
-            const claimed = await invoke<boolean>('automatic_recording_claim_preparation', { request: payload });
+            const claimed = await invoke<boolean>('automatic_recording_claim_preparation', { request });
             if (!claimed || disposed) {
-              if (claimed) await invoke('automatic_recording_cancel_preparation', { request: payload });
+              if (claimed) await invoke('automatic_recording_cancel_preparation', { request });
               return;
             }
             flushSync(() => {
               clearTranscripts();
-              setMeetingTitle('Automatic meeting');
+              setMeetingTitle(meeting_name);
             });
-            await invoke('automatic_recording_prepared', { request: payload });
+            await invoke('automatic_recording_prepared', { request });
           } catch (error) {
-            await invoke('automatic_recording_cancel_preparation', { request: payload });
+            await invoke('automatic_recording_cancel_preparation', { request });
             toast.error(`Automatic recording preparation failed: ${String(error)}`);
           }
         });

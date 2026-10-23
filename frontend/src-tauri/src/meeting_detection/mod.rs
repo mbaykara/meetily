@@ -5,6 +5,7 @@ mod native;
 mod policy;
 mod postprocessing;
 mod preparation;
+mod session;
 use crate::audio::{recording_commands as recording, recording_preferences};
 use policy::{Action, Observation, Policy};
 use serde::{Deserialize, Serialize};
@@ -308,7 +309,11 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
             );
             let result = match action {
                 Some(Action::Start) => {
-                    let result = start_owned(&app, generation).await;
+                    let name = session::local_session_name(
+                        prefs.teams && observations[0] == Observation::Active,
+                        prefs.zoom && observations[1] == Observation::Active,
+                    );
+                    let result = start_owned(&app, generation, name).await;
                     policy.started(result.as_ref().ok().copied());
                     if state.generation.load(std::sync::atomic::Ordering::SeqCst) != generation {
                         policy = Policy::default();
@@ -353,7 +358,11 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
         }
     });
 }
-async fn start_owned<R: Runtime>(app: &AppHandle<R>, generation: u64) -> Result<u64, String> {
+async fn start_owned<R: Runtime>(
+    app: &AppHandle<R>,
+    generation: u64,
+    meeting_name: String,
+) -> Result<u64, String> {
     let state = app.state::<Automation>();
     if !state.ready.load(std::sync::atomic::Ordering::SeqCst)
         || state.processing_session.pending() != 0
@@ -378,7 +387,10 @@ async fn start_owned<R: Runtime>(app: &AppHandle<R>, generation: u64) -> Result<
         preparation::Lease::new(request.clone(), generation, Instant::now()),
         sender,
     ));
-    if let Err(error) = app.emit("automatic-recording-prepare", request) {
+    if let Err(error) = app.emit(
+        "automatic-recording-prepare",
+        serde_json::json!({"request":request,"meeting_name":meeting_name}),
+    ) {
         state.preparation.lock().unwrap().take();
         return Err(error.to_string());
     }
@@ -418,7 +430,7 @@ async fn start_owned<R: Runtime>(app: &AppHandle<R>, generation: u64) -> Result<
         app.clone(),
         prefs.preferred_mic_device,
         prefs.preferred_system_device,
-        Some("Automatic meeting".into()),
+        Some(meeting_name.clone()),
         Some(generation),
     )
     .await;
@@ -431,7 +443,7 @@ async fn start_owned<R: Runtime>(app: &AppHandle<R>, generation: u64) -> Result<
     if let Err(e) = crate::notifications::commands::show_recording_started_notification(
         app,
         &manager,
-        Some("Automatic meeting".into()),
+        Some(meeting_name.clone()),
     )
     .await
     {

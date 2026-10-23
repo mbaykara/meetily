@@ -41,7 +41,7 @@ export function AutomaticRecordingSettings() {
   };
   return <section className="space-y-4 border-t pt-6">
     <h4 className="text-base font-medium">Automatic recording</h4>
-    <p className="text-sm text-gray-600">Automatically record Teams and Zoom calls. Stop after all selected calls have ended for ten seconds. Meetily must remain running.</p>
+    <p className="text-sm text-gray-600">Automatically transcribe Teams and Zoom calls without saving sound. Stop after all selected calls have ended for ten seconds. Meetily must remain running.</p>
     {!status && !error && <p role="status">Loading automatic recording settings...</p>}
     {status && !status.supported && <p role="status">Automatic call detection is available on macOS only.</p>}
     {status?.supported && <>

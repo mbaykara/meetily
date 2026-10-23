@@ -435,18 +435,14 @@ pub(crate) async fn start_recording_with_meeting_name_locked<R: Runtime>(
     finalize_recording_start();
     drop(engine_lifecycle_guard);
 
-    // Start optimized parallel transcription task and store handle
-    let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
-    {
-        let mut global_task = TRANSCRIPTION_TASK.lock().unwrap();
-        *global_task = Some(task_handle);
-    }
-
     // CRITICAL: Listen for transcript-update events and save to recording manager
     // This enables transcript history persistence for page reload sync
-    // Store listener ID for cleanup during stop_recording to ensure microphone is released
+    // Keep only a transcript sink alive while queued transcription finishes.
     {
         use tauri::Listener;
+        let transcript_sink = RECORDING_MANAGER.lock().unwrap().as_ref()
+            .ok_or_else(|| "Recording manager is unavailable".to_string())?
+            .transcript_sink();
         let listener_id = app.listen("transcript-update", move |event: tauri::Event| {
             // Parse the transcript update from the event payload
             if let Ok(update) = serde_json::from_str::<TranscriptUpdate>(event.payload()) {
@@ -462,11 +458,8 @@ pub(crate) async fn start_recording_with_meeting_name_locked<R: Runtime>(
                     sequence_id: update.sequence_id,
                 };
 
-                // Save to recording manager
-                if let Ok(manager_guard) = RECORDING_MANAGER.lock() {
-                    if let Some(manager) = manager_guard.as_ref() {
-                        manager.add_transcript_segment(segment);
-                    }
+                if let Err(error) = transcript_sink.upsert(segment) {
+                    warn!("Incremental transcript persistence failed: {error}");
                 }
             }
         });
@@ -474,6 +467,10 @@ pub(crate) async fn start_recording_with_meeting_name_locked<R: Runtime>(
         *global_listener = Some(listener_id);
         info!("✅ Transcript-update event listener registered for history persistence");
     }
+    // Register persistence before workers can emit the first segment.
+    let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
+    *TRANSCRIPTION_TASK.lock().unwrap() = Some(task_handle);
+
 
     // Emit success event
     app.emit("recording-started", serde_json::json!({
@@ -570,6 +567,9 @@ pub(crate) async fn start_recording_with_devices_and_meeting_locked<R: Runtime>(
 
     // Create new recording manager
     let mut manager = RecordingManager::new();
+    if automatic_generation.is_some() {
+        manager.set_transcript_only_session();
+    }
 
     // Load recording preferences to check auto_save setting
     let auto_save = match super::recording_preferences::load_recording_preferences(&app).await {
@@ -582,6 +582,8 @@ pub(crate) async fn start_recording_with_devices_and_meeting_locked<R: Runtime>(
             true // Default to saving if preferences can't be loaded
         }
     };
+
+    let auto_save = super::transcript_files::retain_audio(automatic_generation.is_some(), auto_save);
 
     // Always ensure a meeting name is set so incremental saver initializes
     let effective_meeting_name = meeting_name.clone().unwrap_or_else(|| {
@@ -632,18 +634,14 @@ pub(crate) async fn start_recording_with_devices_and_meeting_locked<R: Runtime>(
     finalize_recording_start();
     drop(engine_lifecycle_guard);
 
-    // Start optimized parallel transcription task and store handle
-    let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
-    {
-        let mut global_task = TRANSCRIPTION_TASK.lock().unwrap();
-        *global_task = Some(task_handle);
-    }
-
     // CRITICAL: Listen for transcript-update events and save to recording manager
     // This enables transcript history persistence for page reload sync
-    // Store listener ID for cleanup during stop_recording to ensure microphone is released
+    // Keep only a transcript sink alive while queued transcription finishes.
     {
         use tauri::Listener;
+        let transcript_sink = RECORDING_MANAGER.lock().unwrap().as_ref()
+            .ok_or_else(|| "Recording manager is unavailable".to_string())?
+            .transcript_sink();
         let listener_id = app.listen("transcript-update", move |event: tauri::Event| {
             // Parse the transcript update from the event payload
             if let Ok(update) = serde_json::from_str::<TranscriptUpdate>(event.payload()) {
@@ -659,11 +657,8 @@ pub(crate) async fn start_recording_with_devices_and_meeting_locked<R: Runtime>(
                     sequence_id: update.sequence_id,
                 };
 
-                // Save to recording manager
-                if let Ok(manager_guard) = RECORDING_MANAGER.lock() {
-                    if let Some(manager) = manager_guard.as_ref() {
-                        manager.add_transcript_segment(segment);
-                    }
+                if let Err(error) = transcript_sink.upsert(segment) {
+                    warn!("Incremental transcript persistence failed: {error}");
                 }
             }
         });
@@ -671,6 +666,10 @@ pub(crate) async fn start_recording_with_devices_and_meeting_locked<R: Runtime>(
         *global_listener = Some(listener_id);
         info!("✅ Transcript-update event listener registered for history persistence");
     }
+    // Register persistence before workers can emit the first segment.
+    let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
+    *TRANSCRIPTION_TASK.lock().unwrap() = Some(task_handle);
+
 
     // Emit success event
     app.emit("recording-started", serde_json::json!({
@@ -754,16 +753,6 @@ pub(crate) async fn stop_recording_locked<R: Runtime>(
         }
     }
 
-    // Step 1.5: Clean up transcript listener to release microphone
-    // Unlisten transcript-update event to prevent lingering references
-    {
-        use tauri::Listener;
-        if let Some(listener_id) = TRANSCRIPT_LISTENER_ID.lock().unwrap().take() {
-            app.unlisten(listener_id);
-            info!("✅ Transcript-update listener removed");
-        }
-    }
-
     // Step 2: Signal transcription workers to finish processing ALL queued chunks
     let _ = app.emit(
         "recording-shutdown-progress",
@@ -780,7 +769,7 @@ pub(crate) async fn stop_recording_locked<R: Runtime>(
         global_task.take()
     };
 
-    if let Some(task_handle) = transcription_task {
+    if let Some(mut task_handle) = transcription_task {
         info!("⏳ Waiting for ALL transcription chunks to be processed (no timeout - preserving every chunk)");
 
         // Enhanced progress monitoring during shutdown
@@ -809,18 +798,23 @@ pub(crate) async fn stop_recording_locked<R: Runtime>(
         // Wait up to 10 minutes for transcription completion to prevent indefinite hangs
         match tokio::time::timeout(
             tokio::time::Duration::from_secs(600), // 10 minutes max
-            task_handle
+            &mut task_handle
         ).await {
             Ok(Ok(())) => {
                 info!("✅ ALL transcription chunks processed successfully - no data lost");
             }
             Ok(Err(e)) => {
                 warn!("⚠️ Transcription task completed with error: {:?}", e);
-                // Continue anyway - the worker may have processed most chunks
+                progress_task.abort();
+                *RECORDING_MANAGER.lock().unwrap() = manager_for_cleanup;
+                return Err(format!("Transcription task failed: {e}"));
             }
             Err(_) => {
-                warn!("⏱️ Transcription timeout (10 minutes) reached, continuing shutdown to prevent indefinite hang");
-                // Continue shutdown even on timeout - better to lose some chunks than hang forever
+                warn!("Transcription is still processing after ten minutes; preserving its task and transcript sink for retry");
+                progress_task.abort();
+                *TRANSCRIPTION_TASK.lock().unwrap() = Some(task_handle);
+                *RECORDING_MANAGER.lock().unwrap() = manager_for_cleanup;
+                return Err("Transcription is still processing. Retry stopping to preserve pending segments.".into());
             }
         }
 
@@ -828,6 +822,16 @@ pub(crate) async fn stop_recording_locked<R: Runtime>(
         progress_task.abort();
     } else {
         info!("ℹ️ No transcription task found to wait for");
+    }
+
+    // Queued workers have finished; the transcript-only listener can now detach.
+    // This listener holds no audio device or recording manager references.
+    {
+        use tauri::Listener;
+        if let Some(listener_id) = TRANSCRIPT_LISTENER_ID.lock().unwrap().take() {
+            app.unlisten(listener_id);
+            info!("✅ Transcript-update listener removed");
+        }
     }
 
     // Step 3: Now safely unload Whisper model after ALL chunks are processed
@@ -1047,13 +1051,13 @@ pub(crate) async fn stop_recording_locked<R: Runtime>(
             Ok(Ok(_)) => {
                 info!("Recording data saved successfully during cleanup");
             }
-            Ok(Err(_)) => {
-                warn!("Recording cleanup failed; transcripts preserved");
-                // Don't fail shutdown - transcripts are already preserved
+            Ok(Err(error)) => {
+                *RECORDING_MANAGER.lock().unwrap() = Some(manager);
+                return Err(format!("Transcript finalization failed: {error}"));
             }
             Err(_) => {
-                warn!("⏱️ File I/O timeout (5 minutes) reached during save, continuing shutdown");
-                // Don't fail shutdown - transcripts are already preserved
+                *RECORDING_MANAGER.lock().unwrap() = Some(manager);
+                return Err("Transcript finalization timed out. Retry stopping; transcript buffers are preserved.".into());
             }
         }
 

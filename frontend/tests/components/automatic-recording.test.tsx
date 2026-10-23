@@ -20,7 +20,8 @@ mock.module('@tauri-apps/api/core', () => ({ ...originalCore, invoke }));
 mock.module('@tauri-apps/api/event', () => ({ ...originalEvent, listen: async (name: string, callback: (e: any) => unknown) => { handlers.set(name, callback); return () => { handlers.delete(name); }; } }));
 mock.module('sonner', () => ({ ...originalToast, toast: { error: mock(() => {}) } }));
 const clearTranscripts = () => { order.push('clear'); };
-const setMeetingTitle = () => { order.push('title'); };
+let preparedTitle = '';
+const setMeetingTitle = (title: string) => { preparedTitle = title; order.push('title'); };
 mock.module('../../src/contexts/TranscriptContext', () => ({ ...originalTranscript, useTranscripts: () => ({ clearTranscripts, setMeetingTitle }) }));
 const { AutomaticRecordingBridge } = await import('../../src/components/AutomaticRecordingBridge');
 const { AutomaticRecordingSettings } = await import('../../src/components/AutomaticRecordingSettings');
@@ -37,8 +38,9 @@ test('global bridge clears transcript state before acknowledging native preparat
   await act(async () => { renderer = create(<AutomaticRecordingBridge ready />); });
   expect(handlers.has('automatic-recording-prepare')).toBe(true);
   order.length = 0;
-  await act(async () => { await handlers.get('automatic-recording-prepare')!({ payload: 'request-1' }); });
+  await act(async () => { await handlers.get('automatic-recording-prepare')!({ payload: { request: 'request-1', meeting_name: 'Teams 2026-10-23_21-50-12' } }); });
   expect(order).toEqual(['automatic_recording_claim_preparation', 'clear', 'title', 'automatic_recording_prepared']);
+  expect(preparedTitle).toBe('Teams 2026-10-23_21-50-12');
   expect(invoke.mock.calls.some(call => call[0] === 'automatic_recording_frontend_ready')).toBe(true);
 });
 test('failed persistence leaves the switch disabled and exposes the error', async () => {
@@ -66,7 +68,7 @@ test('expired preparation after a replacement manual session cannot clear state'
   await act(async () => { renderer = create(<AutomaticRecordingBridge ready />); });
   claimAllowed = false;
   order.length = 0;
-  await act(async () => { await handlers.get('automatic-recording-prepare')!({ payload: 'expired-request' }); });
+  await act(async () => { await handlers.get('automatic-recording-prepare')!({ payload: { request: 'expired-request', meeting_name: 'Teams 2026-10-23_21-50-12' } }); });
   expect(order).toEqual(['automatic_recording_claim_preparation']);
   expect(order).not.toContain('clear');
 });
