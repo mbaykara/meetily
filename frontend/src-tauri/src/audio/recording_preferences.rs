@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_store::StoreExt;
 
 use anyhow::Result;
 #[cfg(target_os = "macos")]
@@ -97,34 +96,17 @@ pub fn generate_recording_filename(format: &str) -> String {
 pub async fn load_recording_preferences<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<RecordingPreferences> {
-    // Try to load from Tauri store
-    let store = app
-        .store_builder("recording_preferences.json")
-        .disable_auto_save()
-        .build()
-        .map_err(|error| anyhow::anyhow!("Cannot load recording preferences: {error}"))?;
-
-    // Try to get the preferences from store
-    let prefs = if let Some(value) = store.get("preferences") {
-        match serde_json::from_value::<RecordingPreferences>(value.clone()) {
-            Ok(mut p) => {
-                info!("Loaded recording preferences from store");
-                // Update macOS backend to current value if needed
-                #[cfg(target_os = "macos")]
-                {
-                    let backend = crate::audio::capture::get_current_backend();
-                    p.system_audio_backend = Some(backend.to_string());
-                }
-                p
-            }
-            Err(e) => {
-                return Err(anyhow::anyhow!("Cannot read recording preferences: {e}"));
-            }
-        }
-    } else {
-        info!("No stored preferences found, using defaults");
-        RecordingPreferences::default()
-    };
+    let path = app
+        .path()
+        .app_data_dir()?
+        .join("recording_preferences.json");
+    let (_, stored) =
+        super::storage_location::read_recording_settings::<RecordingPreferences>(&path)?;
+    let mut prefs = stored.unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    {
+        prefs.system_audio_backend = Some(crate::audio::capture::get_current_backend().to_string());
+    }
 
     info!("Loaded recording preferences: save_folder={:?}, auto_save={}, format={}, mic={:?}, system={:?}",
           prefs.save_folder, prefs.auto_save, prefs.file_format,
@@ -142,22 +124,14 @@ pub async fn save_recording_preferences<R: Runtime>(
           preferences.preferred_mic_device, preferences.preferred_system_device);
 
     super::storage_location::validate_directory(&preferences.save_folder)?;
-    let store = app
-        .store_builder("recording_preferences.json")
-        .disable_auto_save()
-        .build()
-        .map_err(|error| anyhow::anyhow!("Cannot access recording preferences: {error}"))?;
-    let prefs_value = serde_json::to_value(preferences)?;
-    let mut entries: serde_json::Map<String, serde_json::Value> =
-        store.entries().into_iter().collect();
-    entries.insert("preferences".into(), prefs_value.clone());
     let path = app
         .path()
         .app_data_dir()?
         .join("recording_preferences.json");
-    super::storage_location::persist_settings(&path, &serde_json::Value::Object(entries), || {
-        store.set("preferences", prefs_value);
-    })?;
+    let (mut entries, _) =
+        super::storage_location::read_recording_settings::<RecordingPreferences>(&path)?;
+    entries.insert("preferences".into(), serde_json::to_value(preferences)?);
+    super::storage_location::persist_settings(&path, &serde_json::Value::Object(entries), || {})?;
 
     info!("Successfully persisted recording preferences to disk");
 
