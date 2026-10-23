@@ -139,7 +139,12 @@ jobs:
           echo "✓ CoreML acceleration available for Apple Silicon"
 
       - name: Build llama-helper sidecar
+        env:
+          OPENSSL_ROOT_DIR: /opt/homebrew/opt/openssl@3
+          PKG_CONFIG_PATH: /opt/homebrew/opt/openssl@3/lib/pkgconfig
         run: |
+          # The pinned llama.cpp version is not compatible with OpenSSL 4.
+          brew install openssl@3
           echo "Building llama-helper sidecar with Metal support..."
           cargo build --release -p llama-helper --features metal
 
