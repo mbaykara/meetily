@@ -14,6 +14,12 @@ The native detector limits traversal depth, element count, and IPC duration. Eac
 
 A new recording waits for the previous recording to finish saving and complete its navigation cleanup. A failed save keeps the transcript available and blocks another start. Use Retry save in the error notification or Recording Settings to retry after resolving the error. A claimed preparation request reserves the native lifecycle until the frontend commits or cancels; reloading or closing the webview cancels the reservation.
 
+## Calls folder
+
+In Settings > Recording Settings, use Choose Folder under Calls folder to select the destination for new transcripts and optional manual audio. These controls remain available when manual audio saving is off. Open Folder opens the saved destination. The platform default is used until you choose another location.
+
+The selected folder must be an absolute, writable local directory. Cancelling the picker or a failed preference write leaves the previous setting unchanged. The location persists across app restarts. Changing it affects new sessions only; each session keeps the destination captured when it starts. Stop the current recording before changing the folder. Existing recordings stay where they are and are never moved or deleted by this setting.
+
 ## Transcript files and names
 
 Automatic calls use the active app name and local recording start date/time: `Teams 2026-10-23_21-50-12`, `Zoom 2026-10-23_21-50-12`, or `Teams and Zoom 2026-10-23_21-50-12`. The same stable name appears in the meeting list, start notification and saved session folder. Names never come from meeting windows.

@@ -17,6 +17,7 @@ pub struct RecordingSaver {
     incremental_saver: Option<Arc<AsyncMutex<IncrementalAudioSaver>>>,
     finalized_audio_path: Option<PathBuf>,
     meeting_folder: Option<PathBuf>,
+    base_folder: Option<PathBuf>,
     meeting_name: Option<String>,
     metadata: Option<MeetingMetadata>,
     transcript_sink: super::transcript_files::TranscriptSink,
@@ -30,6 +31,7 @@ impl RecordingSaver {
             incremental_saver: None,
             finalized_audio_path: None,
             meeting_folder: None,
+            base_folder: None,
             meeting_name: None,
             metadata: None,
             transcript_sink: super::transcript_files::TranscriptSink::new(
@@ -46,6 +48,9 @@ impl RecordingSaver {
         self.meeting_name = name;
     }
 
+    pub fn set_recording_folder(&mut self, folder: PathBuf) {
+        self.base_folder = Some(folder);
+    }
     pub fn set_transcript_only_session(&mut self) {
         self.transcript_only = true;
     }
@@ -176,14 +181,17 @@ impl RecordingSaver {
         meeting_name: &str,
         create_checkpoints: bool,
     ) -> Result<()> {
-        // Load preferences to get base recordings folder
-        let base_folder = super::recording_preferences::get_default_recordings_folder();
+        let base_folder = self
+            .base_folder
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Recording folder was not configured"))?;
+        super::storage_location::validate_directory(base_folder)?;
 
         // Create meeting folder structure (with or without .checkpoints/ subdirectory)
         let meeting_folder = if self.transcript_only {
-            super::transcript_files::create_transcript_session_folder(&base_folder, meeting_name)?
+            super::transcript_files::create_transcript_session_folder(base_folder, meeting_name)?
         } else {
-            create_meeting_folder(&base_folder, meeting_name, create_checkpoints)?
+            create_meeting_folder(base_folder, meeting_name, create_checkpoints)?
         };
 
         // Only initialize incremental saver if checkpoints are needed (auto_save is true)
@@ -351,6 +359,33 @@ impl Default for RecordingSaver {
 mod tests {
     use super::super::recording_state::DeviceType;
     use super::*;
+
+    #[tokio::test]
+    async fn configured_root_is_snapshotted_for_manual_and_automatic_sessions() {
+        for automatic in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let selected = root.path().join("selected");
+            let later = root.path().join("later");
+            let mut preference = selected.clone();
+            let mut saver = RecordingSaver::new();
+            saver.set_recording_folder(preference.clone());
+            if automatic {
+                saver.set_transcript_only_session();
+            }
+            saver.meeting_name = Some("Teams 2026-10-23_21-50-12".into());
+            saver
+                .initialize_meeting_folder("Teams 2026-10-23_21-50-12", false)
+                .unwrap();
+            preference = later.clone();
+            assert_eq!(preference, later);
+            saver.add_transcript_chunk("Stored in selected root".into());
+            saver.finalize_storage(Some(1.0)).await.unwrap();
+            let folder = saver.get_meeting_folder().unwrap();
+            assert!(folder.starts_with(&selected));
+            assert!(folder.join("transcripts.json").is_file());
+            assert!(!later.exists());
+        }
+    }
 
     #[tokio::test]
     async fn manual_audio_metadata_retry_reuses_finalized_file() {

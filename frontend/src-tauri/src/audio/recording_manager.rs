@@ -532,6 +532,9 @@ impl RecordingManager {
         self.recording_saver.set_meeting_name(name);
     }
 
+    pub fn set_recording_folder(&mut self, folder: std::path::PathBuf) {
+        self.recording_saver.set_recording_folder(folder);
+    }
     pub fn set_transcript_only_session(&mut self) {
         self.recording_saver.set_transcript_only_session();
     }

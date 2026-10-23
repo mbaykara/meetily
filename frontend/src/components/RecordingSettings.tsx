@@ -75,8 +75,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
 
   const handleAutoSaveToggle = async (enabled: boolean) => {
     const newPreferences = { ...preferences, auto_save: enabled };
-    setPreferences(newPreferences);
-    await savePreferences(newPreferences);
+    if (!await savePreferences(newPreferences)) return;
 
     // Track auto-save setting change
     await Analytics.track('auto_save_recording_toggled', {
@@ -90,13 +89,12 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       preferred_mic_device: devices.micDevice,
       preferred_system_device: devices.systemDevice
     };
-    setPreferences(newPreferences);
+    if (!await savePreferences(newPreferences)) return;
     // Sync the in-memory selection ConfigContext exposes to the start path.
     // Without this, the picker only writes to disk (loaded into context once at
     // app mount), so a newly-chosen mic isn't honored until the next launch —
     // start keeps sending the stale launch-time device.
     setSelectedDevices(devices);
-    await savePreferences(newPreferences);
 
     // Track default device preference changes
     // Note: Individual device selection analytics are tracked in DeviceSelection component
@@ -110,8 +108,19 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     try {
       await invoke('open_recordings_folder');
     } catch (error) {
-      console.error('Failed to open recordings folder:', error);
+      toast.error('Could not open calls folder', { description: String(error) });
     }
+  };
+
+  const handleChooseFolder = async () => {
+    setSaving(true);
+    try {
+      const folder = await invoke<string | null>('select_recording_folder');
+      if (folder === null || folder === preferences.save_folder) return;
+      await savePreferences({ ...preferences, save_folder: folder }, 'Calls folder saved');
+    } catch (error) {
+      toast.error('Could not change calls folder', { description: String(error) });
+    } finally { setSaving(false); }
   };
 
   const handleNotificationToggle = async (enabled: boolean) => {
@@ -131,26 +140,18 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     }
   };
 
-  const savePreferences = async (prefs: RecordingPreferences) => {
+  const savePreferences = async (prefs: RecordingPreferences, message = 'Recording preferences saved') => {
     setSaving(true);
     try {
       await invoke('set_recording_preferences', { preferences: prefs });
+      setPreferences(prefs);
       onSave?.(prefs);
-
-      // Show success toast with device details
-      const micDevice = prefs.preferred_mic_device || 'Default';
-      const systemDevice = prefs.preferred_system_device || 'Default';
-      toast.success("Device preferences saved", {
-        description: `Microphone: ${micDevice}, System Audio: ${systemDevice}`
-      });
+      toast.success(message);
+      return true;
     } catch (error) {
-      console.error('Failed to save recording preferences:', error);
-      toast.error("Failed to save device preferences", {
-        description: error instanceof Error ? error.message : String(error)
-      });
-    } finally {
-      setSaving(false);
-    }
+      toast.error('Could not save recording preferences', { description: String(error) });
+      return false;
+    } finally { setSaving(false); }
   };
 
   if (loading) {
@@ -167,61 +168,39 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       <div>
         <h3 className="text-lg font-semibold mb-4">Recording Settings</h3>
         <p className="text-sm text-gray-600 mb-6">
-          Configure how your audio recordings are saved during meetings.
+          Choose where transcripts and optional manual audio are saved.
         </p>
       </div>
 
       {/* Auto Save Toggle */}
       <div className="flex items-center justify-between p-4 border rounded-lg">
         <div className="flex-1">
-          <div className="font-medium">Save Audio Recordings</div>
+          <div className="font-medium">Save audio for manual recordings</div>
           <div className="text-sm text-gray-600">
-            Automatically save audio files when recording stops
+            Automatic Teams and Zoom calls always save transcripts without sound.
           </div>
         </div>
         <Switch
+          aria-label="Save audio for manual recordings"
           checked={preferences.auto_save}
           onCheckedChange={handleAutoSaveToggle}
           disabled={saving}
         />
       </div>
 
-      {/* Folder Location - Only shown when auto_save is enabled */}
-      {preferences.auto_save && (
-        <div className="space-y-4">
-          <div className="p-4 border rounded-lg bg-gray-50">
-            <div className="font-medium mb-2">Save Location</div>
-            <div className="text-sm text-gray-600 mb-3 break-all">
-              {preferences.save_folder || 'Default folder'}
-            </div>
-            <button
-              onClick={handleOpenFolder}
-              className="flex items-center gap-2 px-3 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
-            >
-              <FolderOpen className="w-4 h-4" />
-              Open Folder
-            </button>
-          </div>
-
-          <div className="p-4 border rounded-lg bg-blue-50">
-            <div className="text-sm text-blue-800">
-              <strong>File Format:</strong> {preferences.file_format.toUpperCase()} files
-            </div>
-            <div className="text-xs text-blue-600 mt-1">
-              Recordings are saved with timestamp: recording_YYYYMMDD_HHMMSS.{preferences.file_format}
-            </div>
-          </div>
+      <div className="p-4 border rounded-lg bg-gray-50 space-y-3">
+        <div className="font-medium">Calls folder</div>
+        <div className="text-sm text-gray-600 break-all">{preferences.save_folder || 'Default folder'}</div>
+        <p className="text-sm text-gray-600">New transcripts and optional manual audio are saved here. Existing calls stay in their original folders.</p>
+        <div className="flex gap-2">
+          <button onClick={handleChooseFolder} disabled={saving || isRecording} className="px-3 py-2 text-sm border rounded-md disabled:opacity-50">Choose Folder</button>
+          <button aria-label="Open calls folder" onClick={handleOpenFolder} className="flex items-center gap-2 px-3 py-2 text-sm border rounded-md">
+            <FolderOpen className="w-4 h-4" />Open Folder
+          </button>
         </div>
-      )}
-
-      {/* Info when auto_save is disabled */}
-      {!preferences.auto_save && (
-        <div className="p-4 border rounded-lg bg-yellow-50">
-          <div className="text-sm text-yellow-800">
-            Audio recording is disabled. Enable "Save Audio Recordings" to automatically save your meeting audio.
-          </div>
-        </div>
-      )}
+        {isRecording && <p role="status" className="text-sm text-gray-600">Stop the current recording to change the calls folder.</p>}
+        {!preferences.auto_save && <p className="text-sm text-gray-600">Manual audio files are disabled. Transcripts are still saved in this folder.</p>}
+      </div>
 
       {/* Recording Notification Toggle */}
       <div className="flex items-center justify-between p-4 border rounded-lg">

@@ -360,19 +360,15 @@ pub(crate) async fn start_recording_with_meeting_name_locked<R: Runtime>(
         "message": "Recording initialization started"
     })).map_err(|e| e.to_string())?;
 
-    // Load recording preferences to get auto_save AND device preferences
-    let (auto_save, preferred_mic_name, preferred_system_name) =
-        match super::recording_preferences::load_recording_preferences(&app).await {
-            Ok(prefs) => {
-                info!("📋 Loaded recording preferences: auto_save={}, preferred_mic={:?}, preferred_system={:?}",
-                      prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device);
-                (prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device)
-            }
-            Err(e) => {
-                warn!("Failed to load recording preferences, using defaults: {}", e);
-                (true, None, None)
-            }
-        };
+    // Snapshot devices, retention and output root once for this session.
+    let preferences = super::recording_preferences::load_recording_preferences(&app).await
+        .map_err(|error| format!("Cannot load recording preferences: {error}"))?;
+    let (auto_save, preferred_mic_name, preferred_system_name, save_folder) = (
+        preferences.auto_save,
+        preferences.preferred_mic_device,
+        preferences.preferred_system_device,
+        preferences.save_folder,
+    );
 
     #[cfg(not(target_os = "macos"))]
     let microphone_device = resolve_mic_or_default(&app, preferred_mic_name.as_deref());
@@ -390,6 +386,7 @@ pub(crate) async fn start_recording_with_meeting_name_locked<R: Runtime>(
 
     // Create new recording manager only after startup validation succeeds
     let mut manager = RecordingManager::new();
+    manager.set_recording_folder(save_folder);
 
     // Always ensure a meeting name is set so incremental saver initializes
     let effective_meeting_name = meeting_name.clone().unwrap_or_else(|| {
@@ -571,19 +568,10 @@ pub(crate) async fn start_recording_with_devices_and_meeting_locked<R: Runtime>(
         manager.set_transcript_only_session();
     }
 
-    // Load recording preferences to check auto_save setting
-    let auto_save = match super::recording_preferences::load_recording_preferences(&app).await {
-        Ok(prefs) => {
-            info!("📋 Loaded recording preferences: auto_save={}", prefs.auto_save);
-            prefs.auto_save
-        }
-        Err(e) => {
-            warn!("Failed to load recording preferences, defaulting to auto_save=true: {}", e);
-            true // Default to saving if preferences can't be loaded
-        }
-    };
-
-    let auto_save = super::transcript_files::retain_audio(automatic_generation.is_some(), auto_save);
+    let preferences = super::recording_preferences::load_recording_preferences(&app).await
+        .map_err(|error| format!("Cannot load recording preferences: {error}"))?;
+    manager.set_recording_folder(preferences.save_folder);
+    let auto_save = super::transcript_files::retain_audio(automatic_generation.is_some(), preferences.auto_save);
 
     // Always ensure a meeting name is set so incremental saver initializes
     let effective_meeting_name = meeting_name.clone().unwrap_or_else(|| {

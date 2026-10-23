@@ -13,6 +13,9 @@ pub mod incremental_saver;
 #[path = "../../../src/audio/encode.rs"]
 pub mod encode;
 
+#[path = "../../../src/audio/storage_location.rs"]
+pub mod storage_location;
+
 // Hardware, folder selection and binary discovery are harness boundaries. The
 // saver, incremental saver, codec invocation and disk persistence are production.
 pub struct AudioDevice;
@@ -26,7 +29,12 @@ pub mod recording_preferences {
     pub fn get_default_recordings_folder() -> std::path::PathBuf { panic!("Folder selection is outside this harness") }
 }
 pub mod audio_processing {
-    pub fn create_meeting_folder(_: &std::path::PathBuf,_: &str,_: bool) -> anyhow::Result<std::path::PathBuf> { panic!("Folder selection is outside this harness") }
+    pub fn create_meeting_folder(base: &std::path::PathBuf,name: &str,checkpoints: bool) -> anyhow::Result<std::path::PathBuf> {
+        let folder=base.join(format!("{}_{}",name,chrono::Utc::now().format("%Y-%m-%d_%H-%M")));
+        std::fs::create_dir_all(&folder)?;
+        if checkpoints { std::fs::create_dir_all(folder.join(".checkpoints"))?; }
+        Ok(folder)
+    }
 }
 pub mod ffmpeg {
     pub fn find_ffmpeg_path() -> Option<std::path::PathBuf> {

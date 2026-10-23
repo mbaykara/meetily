@@ -1,7 +1,8 @@
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_store::StoreExt;
 
 use anyhow::Result;
@@ -97,13 +98,11 @@ pub async fn load_recording_preferences<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<RecordingPreferences> {
     // Try to load from Tauri store
-    let store = match app.store("recording_preferences.json") {
-        Ok(store) => store,
-        Err(e) => {
-            warn!("Failed to access store: {}, using defaults", e);
-            return Ok(RecordingPreferences::default());
-        }
-    };
+    let store = app
+        .store_builder("recording_preferences.json")
+        .disable_auto_save()
+        .build()
+        .map_err(|error| anyhow::anyhow!("Cannot load recording preferences: {error}"))?;
 
     // Try to get the preferences from store
     let prefs = if let Some(value) = store.get("preferences") {
@@ -119,8 +118,7 @@ pub async fn load_recording_preferences<R: Runtime>(
                 p
             }
             Err(e) => {
-                warn!("Failed to deserialize preferences: {}, using defaults", e);
-                RecordingPreferences::default()
+                return Err(anyhow::anyhow!("Cannot read recording preferences: {e}"));
             }
         }
     } else {
@@ -143,22 +141,23 @@ pub async fn save_recording_preferences<R: Runtime>(
           preferences.save_folder, preferences.auto_save, preferences.file_format,
           preferences.preferred_mic_device, preferences.preferred_system_device);
 
-    // Get or create store
+    super::storage_location::validate_directory(&preferences.save_folder)?;
     let store = app
-        .store("recording_preferences.json")
-        .map_err(|e| anyhow::anyhow!("Failed to access store: {}", e))?;
-
-    // Serialize preferences to JSON value
-    let prefs_value = serde_json::to_value(preferences)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize preferences: {}", e))?;
-
-    // Save to store
-    store.set("preferences", prefs_value);
-
-    // Persist to disk
-    store
-        .save()
-        .map_err(|e| anyhow::anyhow!("Failed to save store to disk: {}", e))?;
+        .store_builder("recording_preferences.json")
+        .disable_auto_save()
+        .build()
+        .map_err(|error| anyhow::anyhow!("Cannot access recording preferences: {error}"))?;
+    let prefs_value = serde_json::to_value(preferences)?;
+    let mut entries: serde_json::Map<String, serde_json::Value> =
+        store.entries().into_iter().collect();
+    entries.insert("preferences".into(), prefs_value.clone());
+    let path = app
+        .path()
+        .app_data_dir()?
+        .join("recording_preferences.json");
+    super::storage_location::persist_settings(&path, &serde_json::Value::Object(entries), || {
+        store.set("preferences", prefs_value);
+    })?;
 
     info!("Successfully persisted recording preferences to disk");
 
@@ -170,9 +169,6 @@ pub async fn save_recording_preferences<R: Runtime>(
             crate::audio::capture::set_current_backend(backend);
         }
     }
-
-    // Ensure the directory exists
-    ensure_recordings_directory(&preferences.save_folder)?;
 
     Ok(())
 }
@@ -192,6 +188,15 @@ pub async fn set_recording_preferences<R: Runtime>(
     app: AppHandle<R>,
     preferences: RecordingPreferences,
 ) -> Result<(), String> {
+    let _lifecycle = super::recording_commands::LIFECYCLE.lock().await;
+    let previous = load_recording_preferences(&app)
+        .await
+        .map_err(|e| e.to_string())?;
+    if super::recording_commands::current_session().is_some()
+        && previous.save_folder != preferences.save_folder
+    {
+        return Err("Stop the current recording before changing its calls folder".into());
+    }
     save_recording_preferences(&app, &preferences)
         .await
         .map_err(|e| format!("Failed to save recording preferences: {}", e))
@@ -245,13 +250,34 @@ pub async fn open_recordings_folder<R: Runtime>(app: AppHandle<R>) -> Result<(),
 
 #[tauri::command]
 pub async fn select_recording_folder<R: Runtime>(
-    _app: AppHandle<R>,
+    app: AppHandle<R>,
 ) -> Result<Option<String>, String> {
-    // Use Tauri's dialog to select folder
-    // For now, return None - this would need to be implemented with tauri-plugin-dialog
-    // when it's available in the Cargo.toml
-    warn!("Folder selection not yet implemented - using dialog plugin");
-    Ok(None)
+    let preferences = load_recording_preferences(&app)
+        .await
+        .map_err(|e| e.to_string())?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Choose calls folder")
+        .set_directory(&preferences.save_folder)
+        .pick_folder(move |folder| {
+            let _ = sender.send(folder);
+        });
+    let selected = receiver
+        .await
+        .map_err(|_| "Folder picker was closed before returning a result".to_string())?;
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    let path = selected
+        .into_path()
+        .map_err(|e| format!("Choose a local folder: {e}"))?;
+    super::storage_location::validate_directory(&path).map_err(|e| e.to_string())?;
+    Ok(Some(
+        path.to_str()
+            .ok_or_else(|| "Choose a folder with a supported text path".to_string())?
+            .to_owned(),
+    ))
 }
 
 // Backend selection commands
@@ -384,4 +410,3 @@ pub async fn get_audio_backend_info() -> Result<Vec<BackendInfo>, String> {
         }])
     }
 }
-
