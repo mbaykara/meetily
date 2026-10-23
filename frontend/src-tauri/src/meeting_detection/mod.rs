@@ -1,6 +1,7 @@
 //! Native polling owns timing; the global webview only prepares transcript state.
 mod budget;
 mod controls;
+mod diagnostics;
 mod native;
 mod policy;
 mod postprocessing;
@@ -203,6 +204,11 @@ pub fn open_automatic_recording_accessibility() -> Result<(), String> {
         Err("Automatic call detection is available on macOS only.".into())
     }
 }
+fn log_transition(transitions: &mut diagnostics::Transitions, snapshot: diagnostics::Snapshot) {
+    if transitions.changed(snapshot) {
+        log::info!("Call detection transition: {:?}", snapshot);
+    }
+}
 fn label(o: Observation) -> String {
     format!("{o:?}").to_lowercase()
 }
@@ -233,6 +239,7 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
         let mut policy = Policy::default();
         let mut next_stop_retry = Instant::now();
         let mut last_generation = 0;
+        let mut transitions = diagnostics::Transitions::default();
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
             let state = app.state::<Automation>();
@@ -259,13 +266,33 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
             }
             let enabled = prefs.teams || prefs.zoom;
             // Do not inspect other applications until the user opts in.
-            let (permission, observations) = if enabled && cfg!(target_os = "macos") {
+            let (permission, reports) = if enabled && cfg!(target_os = "macos") {
                 tokio::task::spawn_blocking(native::observe)
                     .await
-                    .unwrap_or((false, [Observation::Unknown; 2]))
+                    .unwrap_or((
+                        false,
+                        [diagnostics::AppReport::unknown(diagnostics::ScanReason::WorkerFailed); 2],
+                    ))
             } else {
-                (false, [Observation::Unknown; 2])
+                let reason = if enabled {
+                    diagnostics::ScanReason::UnsupportedPlatform
+                } else {
+                    diagnostics::ScanReason::Disabled
+                };
+                (false, [diagnostics::AppReport::unknown(reason); 2])
             };
+            let observations = reports.map(|report| report.observation);
+            log_transition(
+                &mut transitions,
+                diagnostics::Snapshot {
+                    selected: [prefs.teams, prefs.zoom],
+                    accessibility: permission,
+                    applications: reports,
+                    owned_session: policy.owned,
+                    native_session: recording::current_session(),
+                    waiting_for_save: state.processing_session.pending() != 0,
+                },
+            );
             {
                 let mut status = state.status.lock().unwrap();
                 status.accessibility = permission;
@@ -352,6 +379,17 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
                 }
                 None => continue,
             };
+            log_transition(
+                &mut transitions,
+                diagnostics::Snapshot {
+                    selected: [prefs.teams, prefs.zoom],
+                    accessibility: permission,
+                    applications: reports,
+                    owned_session: policy.owned,
+                    native_session: recording::current_session(),
+                    waiting_for_save: state.processing_session.pending() != 0,
+                },
+            );
             let mut status = state.status.lock().unwrap();
             status.error = result.err().map(|e| format!("Automatic recording: {e}"));
             let _ = app.emit("automatic-recording-status", status.clone());

@@ -30,7 +30,7 @@ Storage errors leave transcript buffers available and report an error. Retry sto
 
 ## Live validation checklist
 
-Controls were observed through Accessibility on Teams 26276.505.5234.9924 during a muted solo call (`Leave` and `Unmute mic` in its meeting window), and on idle Teams and Zoom 7.2.2 (88465) on macOS 27.0.1. These observations informed fixtures. The running native adapter and automatic recording lifecycle have not yet been verified in real calls. Before relying on automation:
+Controls were observed through Accessibility on Teams 26276.505.5234.9924 during a muted solo call (`Leave` and `Unmute mic` in its meeting window), and on idle Teams and Zoom 7.2.2 (88465) on macOS 27.0.1. These observations informed fixtures. On installed build `2ecc52e`, the user verified Zoom automatic start and completed transcript-only JSON/TXT output after manually stopping. Leaving Zoom did not stop the recording automatically. Additional observed post-call Teams chat and Zoom notes-editor layouts are now covered by classifier tests; automatic stop still requires a real-call retest on the replacement build. Before relying on automation:
 
 - Start a solo call in each app and confirm Settings reports active and Meetily starts exactly once.
 - Mute, unmute, and remain silent; recording should continue.
@@ -42,6 +42,12 @@ Controls were observed through Accessibility on Teams 26276.505.5234.9924 during
 - Verify disabling automation hands over the current recording and a manual recording is never automatically stopped.
 
 If a finished call remains unknown, stop Meetily manually and report the application version and language. Do not provide meeting contents or participant details. Do not assume compatibility from a process being installed or an idle window being readable.
+
+## Detection diagnostics
+
+Meetily logs a `Call detection transition` only when an app state, scan reason/completeness, selection or recording ownership changes. Reasons distinguish recognized idle screens, partial call evidence, unrecognized layouts, Accessibility errors and scan bounds. These diagnostics contain fixed categories and native session counters, without inspected labels, window titles, chat/note text, participants or URLs.
+
+A confirmed active call can show `complete: false` because scanning stops once its control pair is found. Confirmed inactivity always requires a complete scan of every relevant window. If automatic stop fails again, these categories establish whether the cause is an unknown layout or an incomplete/error scan; an observed idle fixture alone does not establish native scan completeness.
 
 ## Developer validation
 

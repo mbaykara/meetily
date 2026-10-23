@@ -1,16 +1,20 @@
 //! Reads only accessibility roles and call-control labels in supported desktop apps.
 use super::controls::{windows_observation, AppKind, WindowEvidence};
+use super::diagnostics::{AppReport, ScanReason};
 use super::policy::Observation;
 
 #[cfg(not(target_os = "macos"))]
-pub fn observe() -> (bool, [Observation; 2]) {
-    (false, [Observation::Unknown; 2])
+pub fn observe() -> (bool, [AppReport; 2]) {
+    (
+        false,
+        [AppReport::unknown(ScanReason::UnsupportedPlatform); 2],
+    )
 }
 
 #[cfg(target_os = "macos")]
 mod macos {
     use super::*;
-    use crate::meeting_detection::budget::{Budget, MAX_DEPTH, MAX_ELEMENTS};
+    use crate::meeting_detection::budget::{Budget, MAX_DEPTH, MAX_ELEMENTS, MAX_SCAN_TIME};
     use objc::{class, msg_send, sel, sel_impl};
     use std::{
         ffi::{c_void, CStr},
@@ -82,25 +86,47 @@ mod macos {
             Err(-25200)
         }
     }
-    unsafe fn scan_window(window: Ref, app: AppKind, app_started: Instant) -> WindowEvidence {
+    fn mark_incomplete(
+        evidence: &mut WindowEvidence,
+        reason: &mut Option<ScanReason>,
+        cause: ScanReason,
+    ) {
+        evidence.incomplete = true;
+        reason.get_or_insert(cause);
+    }
+    unsafe fn scan_window(
+        window: Ref,
+        app: AppKind,
+        app_started: Instant,
+    ) -> (WindowEvidence, bool, Option<ScanReason>) {
         let mut evidence = WindowEvidence::default();
+        let mut reason = None;
         let started = Instant::now();
         let mut budget = Budget::default();
         let mut stack = vec![(Owned(CFRetain(window)), 0usize)];
         while let Some((node, depth)) = stack.pop() {
             if AXUIElementSetMessagingTimeout(node.0, 0.05) != 0 {
-                evidence.incomplete = true;
+                mark_incomplete(&mut evidence, &mut reason, ScanReason::AccessibilityError);
                 continue;
             }
             if !budget.visit(depth, started.elapsed()) || app_started.elapsed().as_millis() >= 2500
             {
-                evidence.incomplete = true;
+                let cause = if app_started.elapsed().as_millis() >= 2500 {
+                    ScanReason::ApplicationTimeLimit
+                } else if started.elapsed() >= MAX_SCAN_TIME {
+                    ScanReason::WindowTimeLimit
+                } else if depth > MAX_DEPTH {
+                    ScanReason::DepthLimit
+                } else {
+                    ScanReason::ElementLimit
+                };
+                mark_incomplete(&mut evidence, &mut reason, cause);
                 break;
             }
             let role = match text(node.0, b"AXRole\0") {
                 Ok(Some(role)) => role,
                 _ => {
-                    evidence.incomplete = true;
+                    mark_incomplete(&mut evidence, &mut reason, ScanReason::MissingRole);
                     continue;
                 }
             };
@@ -122,17 +148,21 @@ mod macos {
                     match text(node.0, key) {
                         Ok(Some(label)) => evidence.control(app, &role, &label),
                         Ok(None) => {}
-                        Err(_) => evidence.incomplete = true,
+                        Err(_) => mark_incomplete(
+                            &mut evidence,
+                            &mut reason,
+                            ScanReason::AccessibilityError,
+                        ),
                     }
                 }
                 if evidence.observation() == Observation::Active {
-                    return evidence;
+                    return (evidence, false, reason);
                 }
             }
             match attribute(node.0, b"AXChildren\0") {
                 Ok(Some(children)) => {
                     if CFGetTypeID(children.0) != CFArrayGetTypeID() {
-                        evidence.incomplete = true;
+                        mark_incomplete(&mut evidence, &mut reason, ScanReason::InvalidAttribute);
                         continue;
                     }
                     let count = CFArrayGetCount(children.0);
@@ -140,7 +170,12 @@ mod macos {
                         || count > MAX_ELEMENTS as isize
                         || stack.len() + count as usize > MAX_ELEMENTS
                     {
-                        evidence.incomplete = true;
+                        let cause = if count > 0 && depth >= MAX_DEPTH {
+                            ScanReason::DepthLimit
+                        } else {
+                            ScanReason::ElementLimit
+                        };
+                        mark_incomplete(&mut evidence, &mut reason, cause);
                         continue;
                     }
                     for i in (0..count).rev() {
@@ -160,58 +195,90 @@ mod macos {
                             | "axsplitgroup"
                             | "axtabgroup"
                     ) {
-                        evidence.incomplete = true;
+                        mark_incomplete(&mut evidence, &mut reason, ScanReason::MissingChildren);
                     }
                 }
                 Ok(None) => {}
-                Err(_) => evidence.incomplete = true,
+                Err(_) => {
+                    mark_incomplete(&mut evidence, &mut reason, ScanReason::AccessibilityError)
+                }
             }
         }
-        evidence
+        let complete = !evidence.incomplete;
+        (evidence, complete, reason)
     }
-    unsafe fn scan(pid: i32, app: AppKind) -> Observation {
+    unsafe fn scan(pid: i32, app: AppKind) -> AppReport {
         let root = Owned(AXUIElementCreateApplication(pid));
         if AXUIElementSetMessagingTimeout(root.0, 0.05) != 0 {
-            return Observation::Unknown;
+            return AppReport::unknown(ScanReason::AccessibilityError);
         }
         let started = Instant::now();
         let windows = match attribute(root.0, b"AXWindows\0") {
             Ok(Some(windows)) => windows,
-            _ => return Observation::Unknown,
+            Ok(None) => return AppReport::unknown(ScanReason::NoWindows),
+            Err(_) => return AppReport::unknown(ScanReason::AccessibilityError),
         };
         if CFGetTypeID(windows.0) != CFArrayGetTypeID() {
-            return Observation::Unknown;
+            return AppReport::unknown(ScanReason::InvalidAttribute);
         }
         let count = CFArrayGetCount(windows.0);
         if count > 16 {
-            return Observation::Unknown;
+            return AppReport::unknown(ScanReason::WindowLimit);
+        }
+        if count == 0 {
+            return AppReport::unknown(ScanReason::NoWindows);
         }
         let mut evidence = Vec::new();
         let mut complete = true;
+        let mut reason = None;
         for i in 0..count {
             if started.elapsed().as_millis() >= 2500 {
                 complete = false;
+                reason.get_or_insert(ScanReason::ApplicationTimeLimit);
                 break;
             }
-            let window = scan_window(CFArrayGetValueAtIndex(windows.0, i), app, started);
+            let (window, window_complete, window_reason) =
+                scan_window(CFArrayGetValueAtIndex(windows.0, i), app, started);
             if window.observation() == Observation::Active {
-                return Observation::Active;
+                return AppReport {
+                    observation: Observation::Active,
+                    complete: false,
+                    reason: ScanReason::ConfirmedCall,
+                };
+            }
+            complete &= window_complete;
+            if let Some(cause) = window_reason {
+                reason.get_or_insert(cause);
             }
             evidence.push(window);
         }
-        windows_observation(&evidence, complete)
+        let observation = windows_observation(&evidence, complete);
+        let reason = reason.unwrap_or_else(|| {
+            if evidence.iter().any(WindowEvidence::partial_call) {
+                ScanReason::PartialCall
+            } else if observation == Observation::Inactive {
+                ScanReason::RecognizedIdle
+            } else {
+                ScanReason::UnrecognizedLayout
+            }
+        });
+        AppReport {
+            observation,
+            complete,
+            reason,
+        }
     }
-    pub fn observe() -> (bool, [Observation; 2]) {
+    pub fn observe() -> (bool, [AppReport; 2]) {
         unsafe {
             if !AXIsProcessTrusted() {
-                return (false, [Observation::Unknown; 2]);
+                return (false, [AppReport::unknown(ScanReason::PermissionDenied); 2]);
             }
             let pool: *mut objc::runtime::Object = msg_send![class!(NSAutoreleasePool), new];
             let workspace: *mut objc::runtime::Object =
                 msg_send![class!(NSWorkspace), sharedWorkspace];
             let apps: *mut objc::runtime::Object = msg_send![workspace, runningApplications];
             let count: usize = msg_send![apps, count];
-            let mut result = [Observation::Inactive; 2];
+            let mut result = [AppReport::absent(); 2];
             for i in 0..count {
                 let app: *mut objc::runtime::Object = msg_send![apps, objectAtIndex:i];
                 let bundle: *mut objc::runtime::Object = msg_send![app, bundleIdentifier];
@@ -236,11 +303,7 @@ mod macos {
                         AppKind::Zoom
                     },
                 );
-                result[slot] = match (result[slot], observation) {
-                    (Observation::Active, _) | (_, Observation::Active) => Observation::Active,
-                    (Observation::Unknown, _) | (_, Observation::Unknown) => Observation::Unknown,
-                    _ => Observation::Inactive,
-                };
+                result[slot] = result[slot].merge(observation);
             }
             let _: () = msg_send![pool, drain];
             (true, result)
