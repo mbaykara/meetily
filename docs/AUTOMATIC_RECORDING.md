@@ -6,7 +6,9 @@ Automatic recording transcribes calls without retaining sound. It is an optional
 2. Open Settings, then Recording Settings. Enable Microsoft Teams, Zoom, or both under Automatic recording.
 3. Use Open Accessibility settings and enable Meetily in macOS Privacy & Security > Accessibility. Meetily does not grant or silently request this permission. Existing microphone and system audio permissions remain necessary.
 
-Meetily polls native Accessibility controls about every two seconds. Two active observations start one recording. Confirmed absence for ten seconds stops it and triggers the existing save, transcription, and summary workflow. Mute and silence do not stop recording. If both selected apps have calls, recording continues until both have ended. Unknown or unreadable detection resets confirmation timers and leaves a current recording running. Unsupported controls are displayed as unknown.
+Meetily polls native Accessibility controls about every two seconds. Two active observations start one recording. Confirmed absence for ten seconds stops it and triggers the existing save, transcription, and summary workflow. Mute and silence do not stop recording. Each selected app positively detected in a call joins the current call episode. Recording continues until all participating apps have been confirmed inactive for ten seconds. Unknown or unreadable detection for a participant resets the end timer and leaves recording running. A selected app that has never been detected active in this episode does not block another app’s confirmed end. Unsupported controls are displayed as unknown.
+
+Only positively detected calls participate. An entirely unrecognized call in another app cannot be guaranteed to extend recording. Its raw status remains Unknown; this rule does not turn missing windows, permission failures or scan errors into inactivity.
 
 A manual recording remains under manual control. Manually stopping an automatic recording prevents restarting during the same detected call. Disabling automation during recording hands control to you; use the normal Stop control to finish. A failed start is reported once per detected call; resolve the issue and finish the call before trying again, or start manually. A failed stop remains owned and retries after thirty seconds; the normal Stop control remains available.
 
@@ -22,7 +24,7 @@ The selected folder must be an absolute, writable local directory. Cancelling th
 
 ## Transcript files and names
 
-Automatic calls use the active app name and local recording start date/time: `Teams 2026-10-23_21-50-12`, `Zoom 2026-10-23_21-50-12`, or `Teams and Zoom 2026-10-23_21-50-12`. The same stable name appears in the meeting list, start notification and saved session folder. Names never come from meeting windows.
+Automatic calls use the app name(s) detected at recording start and local start date/time: `Teams 2026-10-23_21-50-12`, `Zoom 2026-10-23_21-50-12`, or `Teams and Zoom 2026-10-23_21-50-12`. The same stable name appears in the meeting list, start notification and saved session folder. A later overlapping call does not rename the existing session. Names never come from meeting windows.
 
 Each automatic session folder contains `transcripts.json`, `metadata.json`, and a readable text file such as `Teams 2026-10-23_21-50-12.txt`. Text lines include elapsed timestamps. Finalization includes queued late transcript segments, completed metadata and recording duration. Audio is used for live transcription and discarded; automatic sessions do not create audio files or `.checkpoints`, even if Save Audio Recordings is enabled for manual recordings. Manual audio preferences remain unchanged, and existing audio files are kept.
 
@@ -30,7 +32,7 @@ Storage errors leave transcript buffers available and report an error. Retry sto
 
 ## Live validation checklist
 
-Controls were observed through Accessibility on Teams 26276.505.5234.9924 during a muted solo call (`Leave` and `Unmute mic` in its meeting window), and on idle Teams and Zoom 7.2.2 (88465) on macOS 27.0.1. These observations informed fixtures. On installed build `2ecc52e`, the user verified Zoom automatic start and completed transcript-only JSON/TXT output after manually stopping. Leaving Zoom did not stop the recording automatically. Additional observed post-call Teams chat and Zoom notes-editor layouts are now covered by classifier tests; automatic stop still requires a real-call retest on the replacement build. Before relying on automation:
+Controls were observed through Accessibility on Teams 26276.505.5234.9924 during a muted solo call (`Leave` and `Unmute mic` in its meeting window), and on idle Teams and Zoom 7.2.2 (88465) on macOS 27.0.1. These observations informed fixtures. On installed build `2ecc52e`, the user verified Zoom automatic start and completed transcript-only JSON/TXT output after manually stopping. Leaving Zoom did not stop the recording automatically. A later installed `6d2cb2a` test confirmed Zoom automatic start and recognized Zoom idle after leaving, but Teams remained Unknown/NoWindows and blocked the old selected-app end policy. Participant-scoped end confirmation now has production-policy regression coverage; automatic stop still requires a real-call retest on the replacement build. Before relying on automation:
 
 - Start a solo call in each app and confirm Settings reports active and Meetily starts exactly once.
 - Mute, unmute, and remain silent; recording should continue.
@@ -45,7 +47,7 @@ If a finished call remains unknown, stop Meetily manually and report the applica
 
 ## Detection diagnostics
 
-Meetily logs a `Call detection transition` only when an app state, scan reason/completeness, selection or recording ownership changes. Reasons distinguish recognized idle screens, partial call evidence, unrecognized layouts, Accessibility errors and scan bounds. These diagnostics contain fixed categories and native session counters, without inspected labels, window titles, chat/note text, participants or URLs.
+Meetily logs a `Call detection transition` only when an app state, scan reason/completeness, selection, participant set or recording ownership changes. Reasons distinguish recognized idle screens, partial call evidence, unrecognized layouts, Accessibility errors and scan bounds. The participant mask is ordered Teams, then Zoom. These diagnostics contain fixed categories and native session counters, without inspected labels, window titles, chat/note text, participants or URLs.
 
 A confirmed active call can show `complete: false` because scanning stops once its control pair is found. Confirmed inactivity always requires a complete scan of every relevant window. If automatic stop fails again, these categories establish whether the cause is an unknown layout or an incomplete/error scan; an observed idle fixture alone does not establish native scan completeness.
 

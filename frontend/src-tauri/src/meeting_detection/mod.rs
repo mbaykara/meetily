@@ -288,6 +288,7 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
                     selected: [prefs.teams, prefs.zoom],
                     accessibility: permission,
                     applications: reports,
+                    participants: policy.participants(),
                     owned_session: policy.owned,
                     native_session: recording::current_session(),
                     waiting_for_save: state.processing_session.pending() != 0,
@@ -310,29 +311,14 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
                 );
                 continue;
             }
-            let mut selected = Vec::new();
-            if prefs.teams {
-                selected.push(observations[0]);
-            }
-            if prefs.zoom {
-                selected.push(observations[1]);
-            }
-            let observation = policy::combined(&selected);
-            // During a stop failure, wait before retrying rather than hammering audio.
-            if Instant::now() < next_stop_retry && policy.owned.is_some() && enabled {
-                continue;
-            }
-            if policy.owned.is_none()
-                && (!state.ready.load(std::sync::atomic::Ordering::SeqCst)
-                    || state.processing_session.pending() != 0)
-            {
-                continue;
-            }
-            let action = policy.tick(
+            let can_start = state.ready.load(std::sync::atomic::Ordering::SeqCst)
+                && state.processing_session.pending() == 0;
+            let action = policy.tick_apps(
                 origin.elapsed().as_secs(),
-                enabled,
-                observation,
+                [prefs.teams, prefs.zoom],
+                observations,
                 recording::current_session(),
+                can_start,
             );
             let result = match action {
                 Some(Action::Start) => {
@@ -348,6 +334,12 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
                     result.map(|_| ())
                 }
                 Some(Action::Stop(id)) => {
+                    // Observe all samples during retry cooldown so a participant
+                    // becoming Unknown or Active still resets end confirmation.
+                    if Instant::now() < next_stop_retry {
+                        policy.stopped(false);
+                        continue;
+                    }
                     let _lock = recording::LIFECYCLE.lock().await;
                     if state
                         .relinquish
@@ -385,6 +377,7 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
                     selected: [prefs.teams, prefs.zoom],
                     accessibility: permission,
                     applications: reports,
+                    participants: policy.participants(),
                     owned_session: policy.owned,
                     native_session: recording::current_session(),
                     waiting_for_save: state.processing_session.pending() != 0,

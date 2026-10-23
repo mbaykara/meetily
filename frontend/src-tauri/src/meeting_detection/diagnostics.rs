@@ -72,6 +72,7 @@ pub struct Snapshot {
     pub selected: [bool; 2],
     pub accessibility: bool,
     pub applications: [AppReport; 2],
+    pub participants: [bool; 2],
     pub owned_session: Option<u64>,
     pub native_session: Option<u64>,
     pub waiting_for_save: bool,
@@ -100,10 +101,14 @@ mod tests {
             selected: [true, true],
             accessibility: true,
             applications: [AppReport::absent(); 2],
+            participants: [false; 2],
             owned_session: None,
             native_session: None,
             waiting_for_save: false,
         };
+        assert!(transitions.changed(snapshot));
+        assert!(!transitions.changed(snapshot));
+        snapshot.participants = [false, true];
         assert!(transitions.changed(snapshot));
         assert!(!transitions.changed(snapshot));
         snapshot.owned_session = Some(42);
