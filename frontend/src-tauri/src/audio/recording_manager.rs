@@ -279,8 +279,12 @@ impl RecordingManager {
         }
 
         if let Err(error) = self.recording_saver.start_accumulation(auto_save, recording_receiver) {
-            let _ = self.pipeline_manager.stop().await;
-            self.state.cleanup();
+            let state = self.state.clone();
+            let error = super::startup_cleanup::after_storage_failure(
+                error,
+                || state.cleanup(),
+                || self.pipeline_manager.stop(),
+            ).await;
             return Err(RecordingStartError::Other(error));
         }
         self.recording_saver.set_device_info(

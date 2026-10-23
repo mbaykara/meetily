@@ -15,6 +15,7 @@ pub use super::transcript_files::{DeviceInfo, MeetingMetadata, TranscriptSegment
 /// New recording saver using incremental saving strategy
 pub struct RecordingSaver {
     incremental_saver: Option<Arc<AsyncMutex<IncrementalAudioSaver>>>,
+    finalized_audio_path: Option<PathBuf>,
     meeting_folder: Option<PathBuf>,
     meeting_name: Option<String>,
     metadata: Option<MeetingMetadata>,
@@ -27,6 +28,7 @@ impl RecordingSaver {
     pub fn new() -> Self {
         Self {
             incremental_saver: None,
+            finalized_audio_path: None,
             meeting_folder: None,
             meeting_name: None,
             metadata: None,
@@ -266,30 +268,7 @@ impl RecordingSaver {
         // Give time for final chunks
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
-        // Persist every final transcript before optional audio finalization.
-        self.transcript_sink
-            .write()
-            .map_err(|error| format!("Failed to save transcripts: {error}"))?;
-        let final_audio_path = if let Some(saver_arc) = &self.incremental_saver {
-            let mut saver = saver_arc.lock().await;
-            Some(
-                saver
-                    .finalize()
-                    .await
-                    .map_err(|error| format!("Failed to finalize audio: {error}"))?,
-            )
-        } else {
-            None
-        };
-        let metadata = self
-            .metadata
-            .as_ref()
-            .ok_or_else(|| "Recording metadata was not initialized".to_string())?;
-        self.metadata = Some(
-            self.transcript_sink
-                .finalize(metadata, recording_duration)
-                .map_err(|error| format!("Failed to finalize transcripts: {error}"))?,
-        );
+        let final_audio_path = self.finalize_storage(recording_duration).await?;
 
         // Emit save event with audio and transcript paths
         let save_event = serde_json::json!({
@@ -308,6 +287,42 @@ impl RecordingSaver {
 
         // Keep the in-memory copy until the manager drops, including on errors.
         Ok(final_audio_path.map(|path| path.to_string_lossy().to_string()))
+    }
+
+    async fn finalize_storage(
+        &mut self,
+        recording_duration: Option<f64>,
+    ) -> Result<Option<PathBuf>, String> {
+        // Persist every final transcript before optional audio finalization.
+        self.transcript_sink
+            .write()
+            .map_err(|error| format!("Failed to save transcripts: {error}"))?;
+        let final_audio_path = if let Some(path) = &self.finalized_audio_path {
+            Some(path.clone())
+        } else if let Some(saver_arc) = &self.incremental_saver {
+            let mut saver = saver_arc.lock().await;
+            let path = saver
+                .finalize()
+                .await
+                .map_err(|error| format!("Failed to finalize audio: {error}"))?;
+            // Finalization removes checkpoints. Retain its successful result
+            // before any retryable transcript/metadata write can fail.
+            self.finalized_audio_path = Some(path.clone());
+            Some(path)
+        } else {
+            None
+        };
+        let metadata = self
+            .metadata
+            .as_ref()
+            .ok_or_else(|| "Recording metadata was not initialized".to_string())?;
+        self.metadata = Some(
+            self.transcript_sink
+                .finalize(metadata, recording_duration)
+                .map_err(|error| format!("Failed to finalize transcripts: {error}"))?,
+        );
+
+        Ok(final_audio_path)
     }
 
     /// Get the meeting folder path (for passing to backend)
@@ -329,5 +344,75 @@ impl RecordingSaver {
 impl Default for RecordingSaver {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::recording_state::DeviceType;
+    use super::*;
+
+    #[tokio::test]
+    async fn manual_audio_metadata_retry_reuses_finalized_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let folder = directory.path().join("Manual session");
+        std::fs::create_dir_all(folder.join(".checkpoints")).unwrap();
+        let mut saver = RecordingSaver::new();
+        let mut audio = IncrementalAudioSaver::new(folder.clone(), 48000).unwrap();
+        audio
+            .add_chunk(AudioChunk {
+                data: vec![0.25; 24000],
+                sample_rate: 48000,
+                timestamp: 0.0,
+                chunk_id: 1,
+                device_type: DeviceType::Microphone,
+            })
+            .unwrap();
+        saver.incremental_saver = Some(Arc::new(AsyncMutex::new(audio)));
+        saver.meeting_folder = Some(folder.clone());
+        saver.meeting_name = Some("Manual session".into());
+        saver.transcript_sink = super::super::transcript_files::TranscriptSink::new(
+            Some(folder.clone()),
+            "Manual session".into(),
+        );
+        saver.metadata = Some(MeetingMetadata {
+            version: "1.0".into(),
+            meeting_id: None,
+            meeting_name: Some("Manual session".into()),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            completed_at: None,
+            duration_seconds: None,
+            devices: DeviceInfo {
+                microphone: None,
+                system_audio: None,
+            },
+            audio_file: "audio.mp4".into(),
+            transcript_file: "transcripts.json".into(),
+            sample_rate: 48000,
+            status: "recording".into(),
+        });
+        saver.add_transcript_chunk("Final transcript survives retry".into());
+        let metadata_path = folder.join("metadata.json");
+        std::fs::create_dir(&metadata_path).unwrap();
+        let first = saver.finalize_storage(Some(0.5)).await;
+        assert!(first
+            .unwrap_err()
+            .contains("Failed to finalize transcripts"));
+        assert!(folder.join("audio.mp4").is_file());
+        assert!(!folder.join(".checkpoints").exists());
+        let audio_before = std::fs::read(folder.join("audio.mp4")).unwrap();
+        assert!(!audio_before.is_empty());
+        std::fs::remove_dir(&metadata_path).unwrap();
+        let path = saver.finalize_storage(Some(0.5)).await.unwrap().unwrap();
+        assert_eq!(path, folder.join("audio.mp4"));
+        assert_eq!(std::fs::read(&path).unwrap(), audio_before);
+        let metadata: MeetingMetadata =
+            serde_json::from_slice(&std::fs::read(metadata_path).unwrap()).unwrap();
+        assert_eq!(metadata.status, "completed");
+        assert_eq!(metadata.duration_seconds, Some(0.5));
+        assert_eq!(saver.get_transcript_segments().len(), 1);
+        assert!(std::fs::read_to_string(folder.join("Manual session.txt"))
+            .unwrap()
+            .contains("Final transcript survives retry"));
     }
 }
