@@ -1,6 +1,9 @@
 name: "Build and Test - macOS"
 
 on:
+  push:
+    branches:
+      - feat/automatic-call-recording
   workflow_dispatch:
     inputs:
       build-type:
@@ -236,7 +239,7 @@ jobs:
           fi
 
       - name: Upload artifacts
-        if: ${{ github.event.inputs.upload-artifacts == 'true' }}
+        if: ${{ github.event_name == 'push' || github.event.inputs.upload-artifacts == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: meetily-macos-aarch64-${{ steps.build-profile.outputs.profile }}-${{ steps.get-version.outputs.version }}
