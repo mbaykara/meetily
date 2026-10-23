@@ -29,6 +29,7 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
 
   useEffect(() => {
     let unlistenFn: (() => void) | undefined;
+    let unlistenRetry: (() => void) | undefined;
 
     const setupListener = async () => {
       try {
@@ -41,6 +42,9 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
           handleRecordingStop(event.payload);
         });
 
+        unlistenRetry = await listen('retry-recording-postprocessing', () => {
+          void handleRecordingStop(true);
+        });
         console.log('[RecordingPostProcessing] Event listener set up successfully');
       } catch (error) {
         console.error('[RecordingPostProcessing] Failed to set up event listener:', error);
@@ -50,6 +54,7 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
     setupListener();
 
     return () => {
+      unlistenRetry?.();
       if (unlistenFn) {
         console.log('[RecordingPostProcessing] Cleaning up event listener');
         unlistenFn();

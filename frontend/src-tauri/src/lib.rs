@@ -743,6 +743,7 @@ pub fn run() {
             meeting_detection::automatic_recording_claim_preparation,
             meeting_detection::automatic_recording_cancel_preparation,
             meeting_detection::complete_recording_postprocessing,
+            meeting_detection::retry_recording_postprocessing,
             meeting_detection::open_automatic_recording_accessibility,
             start_recording,
             stop_recording,

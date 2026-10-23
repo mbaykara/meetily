@@ -3,6 +3,7 @@ mod budget;
 mod controls;
 mod native;
 mod policy;
+mod postprocessing;
 mod preparation;
 use crate::audio::{recording_commands as recording, recording_preferences};
 use policy::{Action, Observation, Policy};
@@ -46,7 +47,7 @@ pub struct Automation {
     ready: std::sync::atomic::AtomicBool,
     relinquish: std::sync::atomic::AtomicBool,
     generation: std::sync::atomic::AtomicU64,
-    processing_session: std::sync::atomic::AtomicU64,
+    processing_session: postprocessing::PostProcessing,
     preparation: Mutex<Option<(preparation::Lease, tokio::sync::oneshot::Sender<()>)>>,
 }
 #[tauri::command]
@@ -105,28 +106,39 @@ pub(crate) fn generation_current<R: Runtime>(app: &AppHandle<R>, generation: u64
         .map(|state| {
             state.generation.load(std::sync::atomic::Ordering::SeqCst) == generation
                 && state.ready.load(std::sync::atomic::Ordering::SeqCst)
-                && state
-                    .processing_session
-                    .load(std::sync::atomic::Ordering::SeqCst)
-                    == 0
+                && state.processing_session.pending() == 0
         })
         .unwrap_or(false)
 }
+pub(crate) fn ensure_recording_start_available<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(), String> {
+    if let Some(state) = app.try_state::<Automation>() {
+        state.processing_session.ensure_start_available()?;
+    }
+    Ok(())
+}
 pub(crate) fn recording_stopped<R: Runtime>(app: &AppHandle<R>, session: u64) {
     if let Some(state) = app.try_state::<Automation>() {
-        state
-            .processing_session
-            .store(session, std::sync::atomic::Ordering::SeqCst);
+        if let Err(error) = state.processing_session.begin(session) {
+            log::error!("Could not reserve recording post-processing: {error}");
+        }
     }
 }
 #[tauri::command]
 pub fn complete_recording_postprocessing(state: tauri::State<'_, Automation>, session: u64) {
-    let _ = state.processing_session.compare_exchange(
-        session,
-        0,
-        std::sync::atomic::Ordering::SeqCst,
-        std::sync::atomic::Ordering::SeqCst,
-    );
+    state.processing_session.complete(session);
+}
+#[tauri::command]
+pub fn retry_recording_postprocessing<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, Automation>,
+) -> Result<(), String> {
+    if state.processing_session.pending() != 0 {
+        app.emit("retry-recording-postprocessing", true)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 #[tauri::command]
 pub fn automatic_recording_claim_preparation(
@@ -134,10 +146,7 @@ pub fn automatic_recording_claim_preparation(
     request: String,
 ) -> bool {
     if !state.ready.load(std::sync::atomic::Ordering::SeqCst)
-        || state
-            .processing_session
-            .load(std::sync::atomic::Ordering::SeqCst)
-            != 0
+        || state.processing_session.pending() != 0
         || recording::current_session().is_some()
     {
         return false;
@@ -259,10 +268,7 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
             {
                 let mut status = state.status.lock().unwrap();
                 status.accessibility = permission;
-                status.waiting_for_save = state
-                    .processing_session
-                    .load(std::sync::atomic::Ordering::SeqCst)
-                    != 0;
+                status.waiting_for_save = state.processing_session.pending() != 0;
                 status.teams = label(observations[0]);
                 status.zoom = label(observations[1]);
                 let _ = app.emit("automatic-recording-status", status.clone());
@@ -290,10 +296,7 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
             }
             if policy.owned.is_none()
                 && (!state.ready.load(std::sync::atomic::Ordering::SeqCst)
-                    || state
-                        .processing_session
-                        .load(std::sync::atomic::Ordering::SeqCst)
-                        != 0)
+                    || state.processing_session.pending() != 0)
             {
                 continue;
             }
@@ -353,10 +356,7 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
 async fn start_owned<R: Runtime>(app: &AppHandle<R>, generation: u64) -> Result<u64, String> {
     let state = app.state::<Automation>();
     if !state.ready.load(std::sync::atomic::Ordering::SeqCst)
-        || state
-            .processing_session
-            .load(std::sync::atomic::Ordering::SeqCst)
-            != 0
+        || state.processing_session.pending() != 0
     {
         return Err("Open Meetily and complete setup before automatic recording can start.".into());
     }
@@ -410,10 +410,7 @@ async fn start_owned<R: Runtime>(app: &AppHandle<R>, generation: u64) -> Result<
     };
     if !enabled
         || state.generation.load(std::sync::atomic::Ordering::SeqCst) != generation
-        || state
-            .processing_session
-            .load(std::sync::atomic::Ordering::SeqCst)
-            != 0
+        || state.processing_session.pending() != 0
     {
         return Err("Automatic recording was disabled before capture started".into());
     }

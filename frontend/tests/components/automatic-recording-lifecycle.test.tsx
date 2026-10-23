@@ -21,6 +21,7 @@ const emit = async (name: string, payload: unknown) => {
 let busy = false;
 const completion = mock(async (command: string) => {
   if (command === 'automatic_recording_claim_preparation') return !busy;
+  if (command === 'start_recording' && busy) throw new Error('The previous recording is still being saved');
   if (command === 'complete_recording_postprocessing') busy = false;
   if (command === 'get_meeting_folder_path') return '/old';
 });
@@ -148,4 +149,23 @@ test('failed prior save preserves transcripts and keeps automatic preparation bl
   await act(async () => { await emit('automatic-recording-prepare','blocked-after-error'); });
   expect(transcripts.transcriptsRef.current.map(t => t.text)).toEqual(['unsaved call']);
   expect(setStatus.mock.calls.some(call => call[0] === 'error')).toBe(true);
+  saveFailure=false;
+  await act(async () => { await emit('retry-recording-postprocessing',true); });
+  await advance();
+  expect(busy).toBe(true);
+  expect(navigate).toBeDefined();
+  await act(async () => { navigate!(); }); await advance();
+  expect(busy).toBe(false);
+  expect(transcripts.transcriptsRef.current).toEqual([]);
+});
+
+test('a manual replacement start is rejected throughout the prior providers save and cleanup', async () => {
+  await start('recording A'); await stop(1);
+  await expect(completion('start_recording')).rejects.toThrow('previous recording is still being saved');
+  expect(saved.length).toBe(1);
+  expect(transcripts.transcriptsRef.current.map(t => t.text)).toEqual(['recording A']);
+  await act(async () => { finishSave(); }); await advance();
+  await expect(completion('start_recording')).rejects.toThrow('previous recording is still being saved');
+  await act(async () => { navigate!(); }); await advance();
+  await expect(completion('start_recording')).resolves.toBeUndefined();
 });

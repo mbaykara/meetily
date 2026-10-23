@@ -56,7 +56,10 @@ export function AutomaticRecordingSettings() {
       </div>}
       <p className="text-sm text-gray-600">Unknown detection never stops a recording. Supported English and German controls depend on your app version. Manual recordings stay under your control. Turning these switches off leaves a current recording running.</p>
     </>}
-    {status?.waiting_for_save && <p role="status" className="text-sm text-gray-600">Waiting for the previous recording to finish saving before starting another automatically.</p>}
+    {status?.waiting_for_save && <div className="space-y-2 text-sm text-gray-600">
+      <p role="status">Waiting for the previous recording to finish saving before starting another.</p>
+      <button className="px-3 py-2 border rounded-md" onClick={() => void invoke('retry_recording_postprocessing').catch(e => toast.error(String(e)))}>Retry save</button>
+    </div>}
     {(error || status?.error) && <p role="alert" className="text-sm text-red-700">{error || status?.error}</p>}
   </section>;
 }

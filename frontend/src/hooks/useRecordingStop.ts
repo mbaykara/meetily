@@ -417,12 +417,20 @@ export function useRecordingStop(
           console.error('Failed to save meeting to database:', saveError);
           setSessionStatus(RecordingStatus.ERROR, saveError instanceof Error ? saveError.message : 'Unknown error');
           toast.error('Failed to save meeting', {
-            description: saveError instanceof Error ? saveError.message : 'Unknown error'
+            description: saveError instanceof Error ? saveError.message : 'Unknown error',
+            duration: Infinity,
+            action: { label: 'Retry save', onClick: () => { void handleRecordingStopRef.current(true); } },
           });
           throw saveError;
         }
+      } else if (isCallApi && !transcriptionComplete) {
+        setSessionStatus(RecordingStatus.ERROR, 'Transcription has not finished. Retry saving before starting another recording.');
+        toast.error('Recording has not finished processing', {
+          description: 'Retry saving before starting another recording.',
+          duration: Infinity,
+          action: { label: 'Retry save', onClick: () => { void handleRecordingStopRef.current(true); } },
+        });
       } else {
-        // No save needed, go back to IDLE
         setSessionStatus(RecordingStatus.IDLE);
       }
 

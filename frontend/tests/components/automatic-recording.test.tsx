@@ -70,3 +70,13 @@ test('expired preparation after a replacement manual session cannot clear state'
   expect(order).toEqual(['automatic_recording_claim_preparation']);
   expect(order).not.toContain('clear');
 });
+
+test('waiting save exposes an explicit retry action', async () => {
+  await act(async () => { renderer = create(<AutomaticRecordingSettings />); });
+  await act(async () => { handlers.get('automatic-recording-status')!({ payload: {
+    preferences, supported:true, accessibility:true, teams:'inactive', zoom:'inactive', error:null, waiting_for_save:true,
+  } }); });
+  const button = renderer!.root.findAllByType('button').find(node => node.props.children === 'Retry save')!;
+  await act(async () => { await button.props.onClick(); });
+  expect(order).toContain('retry_recording_postprocessing');
+});

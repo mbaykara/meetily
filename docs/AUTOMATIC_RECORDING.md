@@ -12,7 +12,7 @@ A manual recording remains under manual control. Manually stopping an automatic 
 
 The native detector limits traversal depth, element count, and IPC duration. Each window has its own scan budget; controls in different windows cannot form an active-call pair. Unreadable windows prevent confirmed call absence. It identifies only exact Teams/Zoom bundle identifiers and supported English/German control labels, requiring both a leave/end-call control and a microphone mute/unmute control. It does not use window titles, process presence, sound levels, browser tabs, or transcript content as active-call signals. It does not log or store inspected UI labels. Accessibility layout changes or localization can prevent detection.
 
-A new automatic session waits for the previous recording to finish saving and complete its navigation cleanup. A failed save leaves automatic starts paused so the transcript stays available. A claimed preparation request reserves the native lifecycle until the frontend commits or cancels; reloading or closing the webview cancels the reservation.
+A new recording waits for the previous recording to finish saving and complete its navigation cleanup. A failed save keeps the transcript available and blocks another start. Use Retry save in the error notification or Recording Settings to retry after resolving the error. A claimed preparation request reserves the native lifecycle until the frontend commits or cancels; reloading or closing the webview cancels the reservation.
 
 ## Live validation checklist
 

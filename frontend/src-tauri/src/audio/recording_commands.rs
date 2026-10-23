@@ -315,6 +315,7 @@ pub(crate) async fn start_recording_with_meeting_name_locked<R: Runtime>(
     app: AppHandle<R>,
     meeting_name: Option<String>,
 ) -> Result<(), String> {
+    crate::meeting_detection::ensure_recording_start_available(&app)?;
     info!(
         "Starting recording with default devices; meeting_name_configured={}",
         meeting_name.is_some()
@@ -506,6 +507,7 @@ pub(crate) async fn start_recording_with_devices_and_meeting_locked<R: Runtime>(
     meeting_name: Option<String>,
     automatic_generation: Option<u64>,
 ) -> Result<(), String> {
+    crate::meeting_detection::ensure_recording_start_available(&app)?;
     info!(
         "Starting recording with specific devices; microphone_configured={}, system_audio_configured={}, meeting_name_configured={}",
         mic_device_name.is_some(),
