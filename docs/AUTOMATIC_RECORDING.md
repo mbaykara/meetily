@@ -5,17 +5,18 @@ Automatic recording is an optional macOS desktop feature. It is off by default. 
 1. Complete Meetily onboarding, choose a transcription model, and verify a manual recording works with your preferred microphone and system audio devices.
 2. Open Settings, then Recording Settings. Enable Microsoft Teams, Zoom, or both under Automatic recording.
 3. Use Open Accessibility settings and enable Meetily in macOS Privacy & Security > Accessibility. Meetily does not grant or silently request this permission. Existing microphone and system audio permissions remain necessary.
-4. Inform participants and follow your organization's recording rules before joining calls.
 
 Meetily polls native Accessibility controls about every two seconds. Two active observations start one recording. Confirmed absence for ten seconds stops it and triggers the existing save, transcription, and summary workflow. Mute and silence do not stop recording. If both selected apps have calls, recording continues until both have ended. Unknown or unreadable detection resets confirmation timers and leaves a current recording running. Unsupported controls are displayed as unknown.
 
 A manual recording remains under manual control. Manually stopping an automatic recording prevents restarting during the same detected call. Disabling automation during recording hands control to you; use the normal Stop control to finish. A failed start is reported once per detected call; resolve the issue and finish the call before trying again, or start manually. A failed stop remains owned and retries after thirty seconds; the normal Stop control remains available.
 
-The native detector limits traversal depth, element count, and IPC duration. It identifies only exact Teams/Zoom bundle identifiers and supported English/German control labels, requiring both a leave/end-call control and a microphone mute/unmute control. It does not use window titles, process presence, sound levels, browser tabs, or transcript content as active-call signals. It does not log or store inspected UI labels. Accessibility layout changes or localization can prevent detection.
+The native detector limits traversal depth, element count, and IPC duration. Each window has its own scan budget; controls in different windows cannot form an active-call pair. Unreadable windows prevent confirmed call absence. It identifies only exact Teams/Zoom bundle identifiers and supported English/German control labels, requiring both a leave/end-call control and a microphone mute/unmute control. It does not use window titles, process presence, sound levels, browser tabs, or transcript content as active-call signals. It does not log or store inspected UI labels. Accessibility layout changes or localization can prevent detection.
+
+A new automatic session waits for the previous recording to finish saving and complete its navigation cleanup. A failed save leaves automatic starts paused so the transcript stays available. A claimed preparation request reserves the native lifecycle until the frontend commits or cancels; reloading or closing the webview cancels the reservation.
 
 ## Live validation checklist
 
-Actual active-call detection on the installed Teams and Zoom versions has not been verified by synthetic tests. Before relying on automation:
+Controls were observed through Accessibility on Teams 26276.505.5234.9924 during a muted solo call (`Leave` and `Unmute mic` in its meeting window), and on idle Teams and Zoom 7.2.2 (88465) on macOS 27.0.1. These observations informed fixtures. The running native adapter and automatic recording lifecycle have not yet been verified in real calls. Before relying on automation:
 
 - Start a solo call in each app and confirm Settings reports active and Meetily starts exactly once.
 - Mute, unmute, and remain silent; recording should continue.
@@ -37,4 +38,4 @@ rustc --test frontend/src-tauri/src/meeting_detection/policy.rs -o /tmp/meetily-
 /tmp/meetily-policy-tests
 ```
 
-Frontend integration tests are in `frontend/tests/components/automatic-recording.test.tsx` and use the existing Bun/React test conventions. The complete native integration requires `cargo check --manifest-path frontend/src-tauri/Cargo.toml --lib`, including the project's audio/model toolchain dependencies.
+Frontend integration tests are in `frontend/tests/components/automatic-recording.test.tsx` and `frontend/tests/components/automatic-recording-lifecycle.test.tsx` and use the existing Bun/React test conventions. The complete native integration requires `cargo check --manifest-path frontend/src-tauri/Cargo.toml --lib`, including the project's audio/model toolchain dependencies.

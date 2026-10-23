@@ -3,6 +3,7 @@ mod budget;
 mod controls;
 mod native;
 mod policy;
+mod preparation;
 use crate::audio::{recording_commands as recording, recording_preferences};
 use policy::{Action, Observation, Policy};
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,7 @@ pub struct Status {
     teams: String,
     zoom: String,
     error: Option<String>,
+    waiting_for_save: bool,
 }
 impl Default for Status {
     fn default() -> Self {
@@ -34,6 +36,7 @@ impl Default for Status {
             teams: "unknown".into(),
             zoom: "unknown".into(),
             error: None,
+            waiting_for_save: false,
         }
     }
 }
@@ -42,7 +45,9 @@ pub struct Automation {
     status: Mutex<Status>,
     ready: std::sync::atomic::AtomicBool,
     relinquish: std::sync::atomic::AtomicBool,
-    preparation: Mutex<Option<(String, tokio::sync::oneshot::Sender<()>)>>,
+    generation: std::sync::atomic::AtomicU64,
+    processing_session: std::sync::atomic::AtomicU64,
+    preparation: Mutex<Option<(preparation::Lease, tokio::sync::oneshot::Sender<()>)>>,
 }
 #[tauri::command]
 pub fn get_automatic_recording_status(state: tauri::State<'_, Automation>) -> Status {
@@ -78,6 +83,11 @@ pub fn set_automatic_recording_preferences<R: Runtime>(
             .relinquish
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
+    if status.preferences != preferences {
+        state
+            .generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
     status.preferences = preferences;
     Ok(())
 }
@@ -86,13 +96,81 @@ pub fn automatic_recording_frontend_ready(state: tauri::State<'_, Automation>, r
     state
         .ready
         .store(ready, std::sync::atomic::Ordering::SeqCst);
+    if !ready {
+        state.preparation.lock().unwrap().take();
+    }
+}
+pub(crate) fn generation_current<R: Runtime>(app: &AppHandle<R>, generation: u64) -> bool {
+    app.try_state::<Automation>()
+        .map(|state| {
+            state.generation.load(std::sync::atomic::Ordering::SeqCst) == generation
+                && state.ready.load(std::sync::atomic::Ordering::SeqCst)
+                && state
+                    .processing_session
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    == 0
+        })
+        .unwrap_or(false)
+}
+pub(crate) fn recording_stopped<R: Runtime>(app: &AppHandle<R>, session: u64) {
+    if let Some(state) = app.try_state::<Automation>() {
+        state
+            .processing_session
+            .store(session, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+#[tauri::command]
+pub fn complete_recording_postprocessing(state: tauri::State<'_, Automation>, session: u64) {
+    let _ = state.processing_session.compare_exchange(
+        session,
+        0,
+        std::sync::atomic::Ordering::SeqCst,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+}
+#[tauri::command]
+pub fn automatic_recording_claim_preparation(
+    state: tauri::State<'_, Automation>,
+    request: String,
+) -> bool {
+    if !state.ready.load(std::sync::atomic::Ordering::SeqCst)
+        || state
+            .processing_session
+            .load(std::sync::atomic::Ordering::SeqCst)
+            != 0
+        || recording::current_session().is_some()
+    {
+        return false;
+    }
+    let generation = state.generation.load(std::sync::atomic::Ordering::SeqCst);
+    state
+        .preparation
+        .lock()
+        .unwrap()
+        .as_mut()
+        .map(|(lease, _)| lease.claim(&request, generation, Instant::now()))
+        .unwrap_or(false)
+}
+#[tauri::command]
+pub fn automatic_recording_cancel_preparation(
+    state: tauri::State<'_, Automation>,
+    request: String,
+) {
+    let mut pending = state.preparation.lock().unwrap();
+    if pending
+        .as_ref()
+        .map(|(lease, _)| lease.request == request)
+        .unwrap_or(false)
+    {
+        pending.take();
+    }
 }
 #[tauri::command]
 pub fn automatic_recording_prepared(state: tauri::State<'_, Automation>, request: String) {
     let mut pending = state.preparation.lock().unwrap();
     if pending
         .as_ref()
-        .map(|(id, _)| id == &request)
+        .map(|(lease, _)| lease.request == request && lease.claimed)
         .unwrap_or(false)
     {
         if let Some((_, sender)) = pending.take() {
@@ -144,6 +222,7 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
         let origin = Instant::now();
         let mut policy = Policy::default();
         let mut next_stop_retry = Instant::now();
+        let mut last_generation = 0;
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
             let state = app.state::<Automation>();
@@ -153,7 +232,21 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
             {
                 policy = Policy::default();
             }
-            let prefs = state.status.lock().unwrap().preferences.clone();
+            let (prefs, generation) = {
+                let status = state.status.lock().unwrap();
+                (
+                    status.preferences.clone(),
+                    state.generation.load(std::sync::atomic::Ordering::SeqCst),
+                )
+            };
+            if generation != last_generation {
+                if policy.owned.is_none() {
+                    policy = Policy::default();
+                } else {
+                    policy.reset_confirmation();
+                }
+                last_generation = generation;
+            }
             let enabled = prefs.teams || prefs.zoom;
             // Do not inspect other applications until the user opts in.
             let (permission, observations) = if enabled && cfg!(target_os = "macos") {
@@ -166,6 +259,10 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
             {
                 let mut status = state.status.lock().unwrap();
                 status.accessibility = permission;
+                status.waiting_for_save = state
+                    .processing_session
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    != 0;
                 status.teams = label(observations[0]);
                 status.zoom = label(observations[1]);
                 let _ = app.emit("automatic-recording-status", status.clone());
@@ -191,7 +288,13 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
             if Instant::now() < next_stop_retry && policy.owned.is_some() && enabled {
                 continue;
             }
-            if policy.owned.is_none() && !state.ready.load(std::sync::atomic::Ordering::SeqCst) {
+            if policy.owned.is_none()
+                && (!state.ready.load(std::sync::atomic::Ordering::SeqCst)
+                    || state
+                        .processing_session
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                        != 0)
+            {
                 continue;
             }
             let action = policy.tick(
@@ -202,8 +305,11 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
             );
             let result = match action {
                 Some(Action::Start) => {
-                    let result = start_owned(&app).await;
+                    let result = start_owned(&app, generation).await;
                     policy.started(result.as_ref().ok().copied());
+                    if state.generation.load(std::sync::atomic::Ordering::SeqCst) != generation {
+                        policy = Policy::default();
+                    }
                     result.map(|_| ())
                 }
                 Some(Action::Stop(id)) => {
@@ -244,9 +350,14 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
         }
     });
 }
-async fn start_owned<R: Runtime>(app: &AppHandle<R>) -> Result<u64, String> {
+async fn start_owned<R: Runtime>(app: &AppHandle<R>, generation: u64) -> Result<u64, String> {
     let state = app.state::<Automation>();
-    if !state.ready.load(std::sync::atomic::Ordering::SeqCst) {
+    if !state.ready.load(std::sync::atomic::Ordering::SeqCst)
+        || state
+            .processing_session
+            .load(std::sync::atomic::Ordering::SeqCst)
+            != 0
+    {
         return Err("Open Meetily and complete setup before automatic recording can start.".into());
     }
     if !crate::onboarding::get_onboarding_status(app.clone())
@@ -262,13 +373,30 @@ async fn start_owned<R: Runtime>(app: &AppHandle<R>) -> Result<u64, String> {
         return Err("A recording is already in progress.".into());
     }
     let request = uuid::Uuid::new_v4().to_string();
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    *state.preparation.lock().unwrap() = Some((request.clone(), sender));
+    let (sender, mut receiver) = tokio::sync::oneshot::channel();
+    *state.preparation.lock().unwrap() = Some((
+        preparation::Lease::new(request.clone(), generation, Instant::now()),
+        sender,
+    ));
     if let Err(error) = app.emit("automatic-recording-prepare", request) {
         state.preparation.lock().unwrap().take();
         return Err(error.to_string());
     }
-    let prepared = tokio::time::timeout(Duration::from_secs(5), receiver).await;
+    let mut prepared = tokio::time::timeout(Duration::from_secs(5), &mut receiver).await;
+    if prepared.is_err() {
+        // A frontend claim reserves this lifecycle. Do not release it underneath
+        // a suspended webview that may still commit its synchronous preparation.
+        let claimed = state
+            .preparation
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|(lease, _)| lease.claimed)
+            .unwrap_or(false);
+        if claimed {
+            prepared = Ok(receiver.await);
+        }
+    }
     state.preparation.lock().unwrap().take();
     prepared
         .map_err(|_| "Frontend preparation timed out".to_string())?
@@ -280,16 +408,27 @@ async fn start_owned<R: Runtime>(app: &AppHandle<R>) -> Result<u64, String> {
         let status = state.status.lock().unwrap();
         status.preferences.teams || status.preferences.zoom
     };
-    if !enabled {
+    if !enabled
+        || state.generation.load(std::sync::atomic::Ordering::SeqCst) != generation
+        || state
+            .processing_session
+            .load(std::sync::atomic::Ordering::SeqCst)
+            != 0
+    {
         return Err("Automatic recording was disabled before capture started".into());
     }
-    recording::start_recording_with_devices_and_meeting_locked(
+    let start_result = recording::start_recording_with_devices_and_meeting_locked(
         app.clone(),
         prefs.preferred_mic_device,
         prefs.preferred_system_device,
         Some("Automatic meeting".into()),
+        Some(generation),
     )
-    .await?;
+    .await;
+    if let Err(error) = start_result {
+        let _ = app.emit("automatic-recording-start-failed", error.clone());
+        return Err(error);
+    }
     crate::tray::update_tray_menu(app);
     let manager = app.state::<crate::notifications::commands::NotificationManagerState<R>>();
     if let Err(e) = crate::notifications::commands::show_recording_started_notification(

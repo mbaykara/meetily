@@ -10,6 +10,7 @@ import { indexedDBService } from '@/services/indexedDBService';
 
 interface TranscriptContextType {
   transcripts: Transcript[];
+  sessionVersionRef: MutableRefObject<number>;
   transcriptsRef: MutableRefObject<Transcript[]>
   addTranscript: (update: TranscriptUpdate) => void;
   copyTranscript: () => void;
@@ -34,6 +35,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
   // Refs for transcript management
   const transcriptsRef = useRef<Transcript[]>(transcripts);
+  const sessionVersionRef = useRef(0);
   const isUserAtBottomRef = useRef<boolean>(true);
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const finalFlushRef = useRef<(() => void) | null>(null);
@@ -93,6 +95,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
         // Listen for recording-started event
         unlistenRecordingStarted = await recordingService.onRecordingStarted(async () => {
+          sessionVersionRef.current += 1;
           try {
             // Generate unique meeting ID
             const meetingId = `meeting-${Date.now()}`;
@@ -482,6 +485,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
   // Clear transcripts (used when starting new recording)
   const clearTranscripts = useCallback(() => {
+    transcriptsRef.current = [];
     setTranscripts([]);
     // Don't clear currentMeetingId here - it will be set by recording-started event
   }, []);
@@ -498,8 +502,10 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    const version = sessionVersionRef.current;
     try {
       await indexedDBService.markMeetingSaved(meetingId);
+      if (version !== sessionVersionRef.current) return;
 
       // Clear both sources
       setCurrentMeetingId(null);
@@ -512,6 +518,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   const value: TranscriptContextType = {
     transcripts,
     transcriptsRef,
+    sessionVersionRef,
     addTranscript,
     copyTranscript,
     flushBuffer,

@@ -1,5 +1,6 @@
 'use client';
 import { useEffect } from 'react';
+import { flushSync } from 'react-dom';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
@@ -15,9 +16,22 @@ export function AutomaticRecordingBridge({ ready }: { ready: boolean }) {
     const setup = async () => {
       try {
         const prepare = await listen<string>('automatic-recording-prepare', async ({ payload }) => {
-          clearTranscripts();
-          setMeetingTitle('Automatic meeting');
-          await invoke('automatic_recording_prepared', { request: payload });
+          try {
+            // Claim the native reservation before touching shared session state.
+            const claimed = await invoke<boolean>('automatic_recording_claim_preparation', { request: payload });
+            if (!claimed || disposed) {
+              if (claimed) await invoke('automatic_recording_cancel_preparation', { request: payload });
+              return;
+            }
+            flushSync(() => {
+              clearTranscripts();
+              setMeetingTitle('Automatic meeting');
+            });
+            await invoke('automatic_recording_prepared', { request: payload });
+          } catch (error) {
+            await invoke('automatic_recording_cancel_preparation', { request: payload });
+            toast.error(`Automatic recording preparation failed: ${String(error)}`);
+          }
         });
         if (disposed) { prepare(); return; }
         listeners.push(prepare);

@@ -504,6 +504,7 @@ pub(crate) async fn start_recording_with_devices_and_meeting_locked<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
     meeting_name: Option<String>,
+    automatic_generation: Option<u64>,
 ) -> Result<(), String> {
     info!(
         "Starting recording with specific devices; microphone_configured={}, system_audio_configured={}, meeting_name_configured={}",
@@ -595,6 +596,12 @@ pub(crate) async fn start_recording_with_devices_and_meeting_locked<R: Runtime>(
     manager.set_error_callback(move |error| {
         let _ = app_for_error.emit("recording-error", error.user_message());
     });
+
+    if let Some(generation) = automatic_generation {
+        if !crate::meeting_detection::generation_current(&app,generation) {
+            return Err("Automatic recording selection changed before capture".into());
+        }
+    }
 
     // Start recording with specified devices and auto_save setting
     let transcription_receiver = manager
@@ -1054,6 +1061,8 @@ pub(crate) async fn stop_recording_locked<R: Runtime>(
         (None, None)
     };
 
+    crate::meeting_detection::recording_stopped(&app, SESSION.load(Ordering::SeqCst));
+
     // Set recording flag to false
     info!("🔍 Setting IS_RECORDING to false");
     IS_RECORDING.store(false, Ordering::SeqCst);
@@ -1093,6 +1102,7 @@ pub(crate) async fn stop_recording_locked<R: Runtime>(
     app.emit(
         "recording-stopped",
         serde_json::json!({
+            "session_id": SESSION.load(Ordering::SeqCst),
             "message": "Recording stopped - frontend will save after all transcripts received",
             "folder_path": folder_path_str,
             "meeting_name": meeting_name_str
@@ -1723,7 +1733,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 ) -> Result<(), String> {
     let _guard = LIFECYCLE.lock().await;
     start_recording_with_devices_and_meeting_locked(
-        app, mic_device_name, system_device_name, meeting_name,
+        app, mic_device_name, system_device_name, meeting_name, None,
     ).await
 }
 

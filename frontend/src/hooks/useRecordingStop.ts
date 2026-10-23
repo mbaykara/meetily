@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
@@ -53,6 +54,7 @@ export function useRecordingStop(
 
   const {
     transcriptsRef,
+    sessionVersionRef,
     flushBuffer,
     clearTranscripts,
     meetingTitle,
@@ -71,6 +73,9 @@ export function useRecordingStop(
 
   // Guard to prevent duplicate/concurrent stop calls (e.g., from UI and tray simultaneously)
   const stopInProgressRef = useRef(false);
+  const fallbackVersion = useRef(0);
+  const versionRef = sessionVersionRef ?? fallbackVersion;
+  const stoppedSessionRef = useRef<number | null>(null);
 
   // Promise to track recording-stopped event data (fixes race condition with recording-stop-complete)
   const recordingStoppedDataRef = useRef<Promise<void> | null>(null);
@@ -84,12 +89,14 @@ export function useRecordingStop(
         console.log('Setting up recording-stopped listener for navigation...');
         unlistenFn = await listen<{
           message: string;
+          session_id?: number;
           folder_path?: string;
           meeting_name?: string;
         }>('recording-stopped', async (event) => {
           // Create promise that resolves when sessionStorage is set (prevents race condition)
           recordingStoppedDataRef.current = (async () => {
-            const { folder_path, meeting_name } = event.payload;
+            const { folder_path, meeting_name, session_id } = event.payload;
+            stoppedSessionRef.current = session_id ?? null;
 
             // Store folder_path and meeting_name for later use in handleRecordingStop
             if (folder_path) {
@@ -119,6 +126,14 @@ export function useRecordingStop(
 
   // Main recording stop handler
   const handleRecordingStop = useCallback(async (isCallApi: boolean) => {
+    const version = versionRef.current;
+    const sameSession = () => versionRef.current === version;
+    const setSessionStatus: typeof setStatus = (next, message) => { if (sameSession()) setStatus(next,message); };
+    const stoppedSession = stoppedSessionRef.current;
+    const initialTranscripts = [...transcriptsRef.current];
+    const initialFolderPath = sessionStorage.getItem('last_recording_folder_path');
+    const initialMeetingName = sessionStorage.getItem('last_recording_meeting_name');
+    let processingSucceeded = false;
     if (recordingStoppedDataRef.current) {
       await recordingStoppedDataRef.current;
     }
@@ -130,9 +145,11 @@ export function useRecordingStop(
     stopInProgressRef.current = true;
 
     // Set status to STOPPING immediately
-    setStatus(RecordingStatus.STOPPING);
-    setIsRecording(false);
-    setIsRecordingDisabled(true);
+    setSessionStatus(RecordingStatus.STOPPING);
+    if (sameSession()) {
+      setIsRecording(false);
+      setIsRecordingDisabled(true);
+    }
     const stopStartTime = Date.now();
 
     try {
@@ -146,7 +163,7 @@ export function useRecordingStop(
       console.log('Recording already stopped by RecordingControls, processing transcription...');
 
       // Wait for transcription to complete
-      setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Waiting for transcription...');
+      setSessionStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Waiting for transcription...');
       console.log('Waiting for transcription to complete...');
 
       const MAX_WAIT_TIME = 60000; // 60 seconds maximum wait (increased for longer processing)
@@ -183,7 +200,7 @@ export function useRecordingStop(
           // Update user with current status
           if (status.chunks_in_queue > 0) {
             console.log(`Processing ${status.chunks_in_queue} remaining audio chunks...`);
-            setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, `Processing ${status.chunks_in_queue} remaining chunks...`);
+            setSessionStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, `Processing ${status.chunks_in_queue} remaining chunks...`);
           }
 
           // Wait before next check
@@ -215,8 +232,8 @@ export function useRecordingStop(
         time_since_stop: flushStartTime - stopStartTime,
         current_transcript_count: transcriptsRef.current.length
       });
-      setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Flushing transcript buffer...');
-      flushBuffer();
+      setSessionStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Flushing transcript buffer...');
+      if (sameSession()) flushBuffer();
       const flushEndTime = Date.now();
       console.log('✅ Final buffer flush completed', {
         flush_duration: flushEndTime - flushStartTime,
@@ -235,14 +252,14 @@ export function useRecordingStop(
       // This ensures user sees all transcripts streaming in before database save
       if (isCallApi && transcriptionComplete == true) {
 
-        setStatus(RecordingStatus.SAVING, 'Saving meeting to database...');
+        setSessionStatus(RecordingStatus.SAVING, 'Saving meeting to database...');
 
         // Get fresh transcript state (ALL transcripts including late ones)
-        const freshTranscripts = [...transcriptsRef.current];
+        const freshTranscripts = sameSession() ? [...transcriptsRef.current] : initialTranscripts;
 
         // Get folder_path and meeting_name from recording-stopped event
-        const folderPath = sessionStorage.getItem('last_recording_folder_path');
-        const savedMeetingName = sessionStorage.getItem('last_recording_meeting_name');
+        const folderPath = initialFolderPath;
+        const savedMeetingName = initialMeetingName;
 
         console.log('💾 Saving COMPLETE transcripts to database...', {
           transcript_count: freshTranscripts.length,
@@ -294,20 +311,21 @@ export function useRecordingStop(
           console.log('   folder_path:', folderPath);
 
           // Mark meeting as saved in IndexedDB (for recovery system)
-          await markMeetingAsSaved();
+          if (sameSession()) await markMeetingAsSaved();
 
           // Clean up session storage
-          sessionStorage.removeItem('last_recording_folder_path');
-          sessionStorage.removeItem('last_recording_meeting_name');
-          // Clean up IndexedDB meeting ID (redundant with markMeetingAsSaved cleanup, but ensures cleanup)
-          sessionStorage.removeItem('indexeddb_current_meeting_id');
+          if (sameSession()) {
+            sessionStorage.removeItem('last_recording_folder_path');
+            sessionStorage.removeItem('last_recording_meeting_name');
+            sessionStorage.removeItem('indexeddb_current_meeting_id');
+          }
 
           // Refetch meetings and set current meeting
           await refetchMeetings();
 
           try {
             const meetingData = await storageService.getMeeting(meetingId);
-            if (meetingData) {
+            if (meetingData && sameSession()) {
               setCurrentMeeting({
                 id: meetingId,
                 title: meetingData.title
@@ -316,11 +334,11 @@ export function useRecordingStop(
             }
           } catch (error) {
             console.warn('Could not fetch meeting details, using ID only:', error);
-            setCurrentMeeting({ id: meetingId, title: savedMeetingName || meetingTitle || 'New Meeting' });
+            if (sameSession()) setCurrentMeeting({ id: meetingId, title: savedMeetingName || meetingTitle || 'New Meeting' });
           }
 
           // Mark as completed
-          setStatus(RecordingStatus.COMPLETED);
+          setSessionStatus(RecordingStatus.COMPLETED);
 
           // Show success toast with navigation option
           toast.success('Recording saved successfully!', {
@@ -336,14 +354,14 @@ export function useRecordingStop(
           });
 
           // Auto-navigate after a short delay with source parameter
-          setTimeout(() => {
+          // Keep native automatic starts blocked until navigation cleanup commits.
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          if (sameSession()) {
             router.push(`/meeting-details?id=${meetingId}&source=recording`);
-            clearTranscripts()
+            clearTranscripts();
             Analytics.trackPageView('meeting_details');
-
-            // Reset to IDLE after navigation
-            setStatus(RecordingStatus.IDLE);
-          }, 2000);
+            setSessionStatus(RecordingStatus.IDLE);
+          }
           // Track meeting completion analytics
           try {
             // Calculate meeting duration from transcript timestamps
@@ -397,7 +415,7 @@ export function useRecordingStop(
 
         } catch (saveError) {
           console.error('Failed to save meeting to database:', saveError);
-          setStatus(RecordingStatus.ERROR, saveError instanceof Error ? saveError.message : 'Unknown error');
+          setSessionStatus(RecordingStatus.ERROR, saveError instanceof Error ? saveError.message : 'Unknown error');
           toast.error('Failed to save meeting', {
             description: saveError instanceof Error ? saveError.message : 'Unknown error'
           });
@@ -405,26 +423,33 @@ export function useRecordingStop(
         }
       } else {
         // No save needed, go back to IDLE
-        setStatus(RecordingStatus.IDLE);
+        setSessionStatus(RecordingStatus.IDLE);
       }
 
-      setIsMeetingActive(false);
+      processingSucceeded = !isCallApi || transcriptionComplete;
+      if (sameSession()) setIsMeetingActive(false);
       // isRecording already set to false at function start
-      setIsRecordingDisabled(false);
+      if (sameSession()) setIsRecordingDisabled(false);
     } catch (error) {
       console.error('Error in handleRecordingStop:', error);
-      setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Unknown error');
+      setSessionStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Unknown error');
       // isRecording already set to false at function start
-      setIsRecordingDisabled(false);
+      if (sameSession()) setIsRecordingDisabled(false);
     } finally {
       // Always reset the guard flag when done
       stopInProgressRef.current = false;
+      if (processingSucceeded && stoppedSession !== null) {
+        try {
+          await invoke('complete_recording_postprocessing', { session: stoppedSession });
+        } catch (error) { console.error('Could not release automatic recording after save:', error); }
+      }
     }
   }, [
     setIsRecording,
     setIsRecordingDisabled,
     setStatus,
     transcriptsRef,
+    versionRef,
     flushBuffer,
     clearTranscripts,
     meetingTitle,

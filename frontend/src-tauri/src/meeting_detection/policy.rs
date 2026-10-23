@@ -19,6 +19,11 @@ pub struct Policy {
     pending: bool,
 }
 impl Policy {
+    pub fn reset_confirmation(&mut self) {
+        self.positives = 0;
+        self.absent_since = None;
+        self.pending = false;
+    }
     pub fn tick(
         &mut self,
         now: u64,
@@ -102,6 +107,18 @@ mod tests {
         );
         p.started(Some(7));
         p
+    }
+    #[test]
+    fn new_selection_requires_fresh_confirmations() {
+        let mut policy = Policy::default();
+        assert_eq!(policy.tick(0, true, Observation::Active, None), None);
+        policy.reset_confirmation();
+        assert_eq!(policy.tick(2, true, Observation::Inactive, None), None);
+        assert_eq!(policy.tick(4, true, Observation::Active, None), None);
+        assert_eq!(
+            policy.tick(6, true, Observation::Active, None),
+            Some(Action::Start)
+        );
     }
     #[test]
     fn duplicate_start() {

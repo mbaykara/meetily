@@ -1,8 +1,8 @@
 //! Hard limits shared by the native scanner and deterministic tests.
 use std::time::Duration;
-pub const MAX_ELEMENTS: usize = 600;
+pub const MAX_ELEMENTS: usize = 2500;
 pub const MAX_DEPTH: usize = 18;
-pub const MAX_SCAN_TIME: Duration = Duration::from_millis(700);
+pub const MAX_SCAN_TIME: Duration = Duration::from_millis(900);
 #[derive(Default)]
 pub struct Budget {
     visited: usize,
@@ -23,6 +23,15 @@ mod tests {
             assert!(budget.visit(0, Duration::ZERO));
         }
         assert!(!budget.visit(0, Duration::ZERO));
+    }
+    #[test]
+    fn large_shell_does_not_consume_another_windows_budget() {
+        let mut shell = Budget::default();
+        for _ in 0..700 {
+            assert!(shell.visit(5, Duration::ZERO));
+        }
+        let mut call = Budget::default();
+        assert!(call.visit(1, Duration::ZERO));
     }
     #[test]
     fn time_and_depth_limits() {

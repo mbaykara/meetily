@@ -8,7 +8,7 @@ import { toast } from 'sonner';
 type Preferences = { teams: boolean; zoom: boolean };
 type Status = {
   preferences: Preferences; supported: boolean; accessibility: boolean;
-  teams: string; zoom: string; error: string | null;
+  teams: string; zoom: string; error: string | null; waiting_for_save: boolean;
 };
 export function AutomaticRecordingSettings() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -41,7 +41,7 @@ export function AutomaticRecordingSettings() {
   };
   return <section className="space-y-4 border-t pt-6">
     <h4 className="text-base font-medium">Automatic recording</h4>
-    <p className="text-sm text-gray-600">Start when Teams or Zoom exposes supported call controls. Stop after all selected calls have ended for ten seconds. Meetily must remain running. Inform participants before recording.</p>
+    <p className="text-sm text-gray-600">Automatically record Teams and Zoom calls. Stop after all selected calls have ended for ten seconds. Meetily must remain running.</p>
     {!status && !error && <p role="status">Loading automatic recording settings...</p>}
     {status && !status.supported && <p role="status">Automatic call detection is available on macOS only.</p>}
     {status?.supported && <>
@@ -56,6 +56,7 @@ export function AutomaticRecordingSettings() {
       </div>}
       <p className="text-sm text-gray-600">Unknown detection never stops a recording. Supported English and German controls depend on your app version. Manual recordings stay under your control. Turning these switches off leaves a current recording running.</p>
     </>}
+    {status?.waiting_for_save && <p role="status" className="text-sm text-gray-600">Waiting for the previous recording to finish saving before starting another automatically.</p>}
     {(error || status?.error) && <p role="alert" className="text-sm text-red-700">{error || status?.error}</p>}
   </section>;
 }

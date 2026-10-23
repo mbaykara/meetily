@@ -1,6 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { recordingService } from '@/services/recordingService';
 import { toast } from 'sonner';
 
@@ -160,6 +161,11 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
             : { ...prev, status: RecordingStatus.STARTING, statusMessage: 'Starting recording...' });
         });
         unsubscribers.push(unlistenStarting);
+
+        const unlistenAutomaticFailure = await listen<string>('automatic-recording-start-failed', ({ payload }) => {
+          setState(prev => prev.isRecording ? prev : { ...prev, status: RecordingStatus.ERROR, statusMessage: payload });
+        });
+        unsubscribers.push(unlistenAutomaticFailure);
 
         // Recording stopped
         const unlistenStopped = await recordingService.onRecordingStopped((payload) => {
